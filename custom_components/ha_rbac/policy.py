@@ -1348,6 +1348,48 @@ class Evaluator:
         return compiled
 
     @callback
+    def async_satellite_permissions(self, user: Any) -> Permissions:
+        """Resolve a verified speaker without the ordinary unbound-user fallback.
+
+        This is a policy lookup, not authentication or a satellite grant. The
+        caller must independently bind the speaker to a trusted audio turn.
+        Owners retain full access; system accounts cannot become speakers.
+        """
+        if (
+            user is None
+            or not user.is_active
+            or user.system_generated
+            or not isinstance(user.id, str)
+            or not user.id
+        ):
+            return Permissions()
+        if user.is_owner:
+            return Permissions(pass_through=True)
+        if not self._store.bindings.get(user.id):
+            return Permissions()
+        return self.async_permissions(user)
+
+    @callback
+    def async_guest_permissions(self, role_id: str) -> Permissions:
+        """Resolve one administrator-selected restricted role without an account.
+
+        No last speaker, HA group fallback, or user identity is borrowed. Guests
+        have no known person location, so location-gated roles grant nothing.
+        Store/registry writes use the existing evaluator invalidation hooks.
+        """
+        if (
+            not isinstance(role_id, str)
+            or not role_id
+            or role_id not in self._store.roles
+            or (role := self._compiled_role(role_id)) is None
+            or role.full_access
+            or not role.active_at(dt_util.now())
+            or not location_active(self._hass, role.location, None)
+        ):
+            return Permissions()
+        return Permissions(roles=[role])
+
+    @callback
     def async_permissions(self, user: Any) -> Permissions:
         """Return the effective permissions for a user.
 
