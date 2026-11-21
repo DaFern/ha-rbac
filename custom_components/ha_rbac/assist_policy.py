@@ -28,6 +28,7 @@ GUEST_ACTIONS = {
     "media_player": frozenset({
         "media_play", "media_pause", "media_next_track", "media_previous_track",
         "volume_up", "volume_down", "volume_set", "clear_playlist", "play_media",
+        "media_stop", "volume_mute", "media_seek", "shuffle_set", "repeat_set",
     }),
 }
 MAX_TARGETS = 32
@@ -544,3 +545,115 @@ async def async_project_voice_context(
         )
     except Exception:  # noqa: BLE001 -- never return a partial projection on errors
         return unavailable
+
+
+VOICE_REFERENCE_VERSION = 1
+VOICE_CAPABILITY_VERSION = 1
+
+
+async def async_check_voice_capability(hass, entity_ids, **kwargs):
+    """Check a finite ordinary capability without widening legacy action interfaces."""
+    from .voice_capabilities import check  # noqa: PLC0415
+
+    return await check(hass, entity_ids, **kwargs)
+
+
+async def async_project_voice_capabilities(hass, entity_ids, **kwargs):
+    """Project curated ordinary-device state under current native/RBAC read policy."""
+    from .voice_capabilities import project  # noqa: PLC0415
+
+    return await project(hass, entity_ids, **kwargs)
+
+
+async def async_project_voice_references(
+    hass: HomeAssistant, entity_ids: tuple[str, ...], *,
+    guest_role_id: str | None = None, user_id: str | None = None,
+) -> dict:
+    """Return permitted conversational references, never group execution authority."""
+    from homeassistant.helpers import area_registry as ar  # noqa: PLC0415
+    from homeassistant.helpers import device_registry as dr  # noqa: PLC0415
+    from homeassistant.helpers import entity_registry as er  # noqa: PLC0415
+
+    unavailable = {"available": False, "references": []}
+    if (
+        type(entity_ids) is not tuple or not 0 < len(entity_ids) <= 1024
+        or any(type(eid) is not str or not ENTITY_ID.fullmatch(eid)
+               or eid.partition(".")[0] not in set(GUEST_ACTIONS) | {"climate", "cover"}
+               for eid in entity_ids)
+        or len(set(entity_ids)) != len(entity_ids)
+    ):
+        return unavailable
+    rbac = hass.data.get(DATA_RBAC)
+    if rbac is None:
+        return unavailable
+    try:
+        resolved = await _satellite_permissions(hass, rbac, user_id, guest_role_id)
+        if resolved is None or hass.data.get(DATA_RBAC) is not rbac:
+            return unavailable
+        native, role = resolved
+        entities, devices, areas = er.async_get(hass), dr.async_get(hass), ar.async_get(hass)
+
+        def text(value):
+            return type(value) is str and 0 < len(value) <= 128 and value.isprintable()
+
+        def reference(eid):
+            state, entry = hass.states.get(eid), entities.async_get(eid)
+            if (
+                state is None or state.state in {"unknown", "unavailable"}
+                or entry is None or entry.disabled_by is not None
+                or not _satellite_readable(hass, native, role, eid)
+                or role.attribute_hidden(eid, "friendly_name") or not text(state.name)
+            ):
+                return None
+            row = {"entity_id": eid, "name": state.name}
+            if not role.attribute_hidden(eid, "aliases"):
+                row["aliases"] = sorted(alias for alias in entry.aliases if text(alias))[:8]
+            device = devices.async_get(entry.device_id) if entry.device_id else None
+            area = areas.async_get_area(entry.area_id or (device.area_id if device else None))
+            if area and not any(role.attribute_hidden(eid, key) for key in (
+                "area", "area_id", "area_name",
+            )) and text(area.name):
+                row["area"] = area.name
+                if not role.attribute_hidden(eid, "area_aliases"):
+                    row["area_aliases"] = sorted(
+                        alias for alias in area.aliases if text(alias)
+                    )[:8]
+            return row
+
+        visible = {}
+        for eid in entity_ids:
+            state, entry = hass.states.get(eid), entities.async_get(eid)
+            if (state is None or entry is None or entry.platform in {"group", "template"}
+                    or "entity_id" in state.attributes
+                    or (state.domain == "cover" and state.attributes.get("device_class")
+                        not in {"blind", "shade", "curtain", "shutter", "awning"})):
+                continue
+            if row := reference(eid):
+                visible[eid] = row
+        references = [visible[eid] for eid in sorted(visible)]
+        # A group is only a descriptive alias for exact individually readable
+        # direct members. No nested/template/dynamic group is an executable target.
+        groups = 0
+        for state in sorted(hass.states.async_all(), key=lambda state: state.entity_id):
+            members = state.attributes.get("entity_id")
+            entry = entities.async_get(state.entity_id)
+            if (
+                state.domain not in {"light", "switch", "fan", "group"}
+                or entry is None or entry.platform != "group"
+                or type(members) is not list or not 0 < len(members) <= 32
+                or any(type(eid) is not str or eid not in visible
+                       or eid.partition(".")[0] not in {"light", "switch", "fan"}
+                       or "entity_id" in hass.states.get(eid).attributes for eid in members)
+                or len(set(members)) != len(members)
+            ):
+                continue
+            if row := reference(state.entity_id):
+                row["members"] = sorted(members)
+                references.append(row)
+                groups += 1
+                if groups == 32:
+                    break
+    except Exception:  # noqa: BLE001 -- discard partial metadata on policy failure
+        return unavailable
+    else:
+        return {"available": True, "references": references}

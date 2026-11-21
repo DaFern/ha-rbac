@@ -6,6 +6,7 @@ is exercised. The session validator stands in for a future authenticated adapter
 
 import asyncio
 import sys
+import time
 from dataclasses import replace
 from importlib import import_module
 from types import ModuleType, SimpleNamespace
@@ -14,7 +15,8 @@ import pytest
 from cryptography.fernet import Fernet
 from homeassistant.components import stt, tts
 from homeassistant.components.homeassistant.exposed_entities import async_expose_entity
-from homeassistant.core import Context
+from homeassistant.core import Context, SupportsResponse
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import llm
@@ -374,6 +376,276 @@ async def test_voice_tool_turn_uses_own_role_not_guest_or_original_caller(
 
 
 @pytest.fixture
+def reference_catalogue(env):
+    """Build unrelated rooms/aliases and a static group with real compiled permissions."""
+    e = env
+    registry = er.async_get(e.hass)
+    area = ar.async_get(e.hass).async_create("Reading Room", aliases={"Study"})
+    registry.async_update_entity(IDS[0], area_id=area.id, aliases={"Desk lamp"})
+    registry.async_update_entity(IDS[1], area_id=area.id, aliases={"Wall light"})
+    group_entry = MockConfigEntry(domain="group")
+    group_entry.add_to_hass(e.hass)
+    group = registry.async_get_or_create(
+        "light", "group", "reading-group", config_entry=group_entry,
+        suggested_object_id="reading_room",
+    )
+    e.hass.states.async_set(group.entity_id, "on", {
+        "friendly_name": "Reading room lights", "entity_id": list(IDS[:2]),
+    })
+    async_expose_entity(e.hass, "conversation", group.entity_id, True)
+    store = e.hass.data[DATA_RBAC].store
+    for name in ("guest", "child"):
+        store.roles[name]["allow"]["entities"]["entity_ids"][group.entity_id] = {
+            "read": True, "control": True,
+        }
+    e.hass.data[DATA_RBAC].evaluator.invalidate()
+    return SimpleNamespace(e=e, group=group, area=area)
+
+
+async def test_reference_catalogue_uses_permitted_rooms_aliases_and_complete_groups(
+    reference_catalogue,
+):
+    """Descriptive groups do not turn into group-service execution grants."""
+    r = reference_catalogue
+    data = await assist_policy.async_project_voice_references(
+        r.e.hass, IDS, user_id="child",
+    )
+    assert data["available"]
+    rows = {row["entity_id"]: row for row in data["references"]}
+    assert rows[IDS[0]]["area"] == "Reading Room"
+    assert rows[IDS[0]]["area_aliases"] == ["Study"]
+    assert rows[IDS[0]]["aliases"] == ["Desk lamp"]
+    assert rows[r.group.entity_id]["members"] == sorted(IDS[:2])
+    assert not (await assist_policy.async_check_voice_action(
+        r.e.hass, (r.group.entity_id,), user_id="child", operation="turn_off",
+    )).allowed
+    guest = await assist_policy.async_project_voice_references(
+        r.e.hass, IDS, guest_role_id="guest",
+    )
+    assert {row["entity_id"] for row in guest["references"]} == {IDS[0]}
+
+
+@pytest.mark.parametrize("field", ["friendly_name", "aliases", "area_id", "area_aliases"])
+async def test_reference_metadata_obeys_compiled_hidden_fields(reference_catalogue, field):
+    """Metadata must not recover labels or locations the role explicitly hides."""
+    r = reference_catalogue
+    r.e.hass.data[DATA_RBAC].store.roles["guest"]["attributes"] = {"deny": [field]}
+    r.e.hass.data[DATA_RBAC].evaluator.invalidate()
+    data = await assist_policy.async_project_voice_references(
+        r.e.hass, IDS, guest_role_id="guest",
+    )
+    assert data["available"]
+    if field == "friendly_name":
+        assert data["references"] == []
+    else:
+        row = data["references"][0]
+        assert ("area" if field == "area_id" else field) not in row
+
+
+@pytest.mark.parametrize("change", ["hidden_member", "unexposed_group", "nested", "template"])
+async def test_group_references_never_reveal_partial_hidden_or_indirect_members(
+    reference_catalogue, change,
+):
+    """A group's label/membership disappears rather than leaking a hidden sibling."""
+    r = reference_catalogue
+    if change == "hidden_member":
+        async_expose_entity(r.e.hass, "conversation", IDS[1], False)
+    elif change == "unexposed_group":
+        async_expose_entity(r.e.hass, "conversation", r.group.entity_id, False)
+    elif change == "nested":
+        r.e.hass.states.async_set(IDS[1], "on", {"entity_id": [IDS[2]]})
+    else:
+        registry = er.async_get(r.e.hass)
+        registry.async_remove(IDS[1])
+        registry.async_get_or_create(
+            "light", "template", "replacement", suggested_object_id=IDS[1].partition(".")[2],
+        )
+    data = await assist_policy.async_project_voice_references(r.e.hass, IDS, user_id="owner")
+    assert data["available"]
+    assert r.group.entity_id not in {row["entity_id"] for row in data["references"]}
+
+
+@pytest.fixture
+def ordinary_devices(env):
+    """Real registry/capability policy with synthetic ordinary devices and no live I/O."""
+    caps = import_module("custom_components.ha_rbac.voice_capabilities")
+    e = env
+    features = 0
+    for _service, flag in caps.MEDIA.values():
+        features |= flag
+    states = {
+        "light.dimmable": ("on", {
+            "supported_color_modes": ["rgb", "color_temp"], "brightness": 128,
+            "min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 6500,
+        }),
+        "fan.ordinary": ("on", {
+            "supported_features": int(caps.FanEntityFeature.SET_SPEED), "percentage": 30,
+        }),
+        "climate.ordinary": ("heat", {
+            "supported_features": int(caps.ClimateEntityFeature.TARGET_TEMPERATURE
+                                      | caps.ClimateEntityFeature.PRESET_MODE),
+            "temperature": 20, "current_temperature": 18, "min_temp": 5, "max_temp": 30,
+            "hvac_modes": ["off", "heat", "cool"], "preset_modes": ["eco", "comfort"],
+        }),
+        "cover.ordinary": ("open", {
+            "device_class": "blind", "current_position": 50,
+            "supported_features": int(caps.CoverEntityFeature.OPEN | caps.CoverEntityFeature.CLOSE
+                                      | caps.CoverEntityFeature.STOP
+                                      | caps.CoverEntityFeature.SET_POSITION),
+        }),
+        "media_player.television": ("playing", {
+            "supported_features": int(features), "volume_level": 0.4, "media_duration": 180,
+            "media_position": 10, "media_title": "Synthetic track", "source_list": ["HDMI", "TV"],
+            "is_volume_muted": False, "shuffle": False, "repeat": "off",
+        }),
+    }
+    grants = e.store.roles["guest"]["allow"]["entities"]["entity_ids"]
+    registry = er.async_get(e.hass)
+    for eid, (state, attrs) in states.items():
+        domain, _, object_id = eid.partition(".")
+        registry.async_get_or_create(domain, "test", eid, suggested_object_id=object_id)
+        e.hass.states.async_set(eid, state, {"friendly_name": f"Permitted {object_id}", **attrs})
+        async_expose_entity(e.hass, "conversation", eid, True)
+        grants[eid] = {"read": True, "control": True}
+    e.evaluator.invalidate()
+    return SimpleNamespace(e=e, caps=caps, states=states)
+
+
+@pytest.mark.parametrize(("eid", "action", "args", "service", "data"), [
+    ("light.dimmable", "set_light", {"level": 25}, "turn_on", {"brightness_pct": 25}),
+    ("light.dimmable", "set_light", {"rgb": [10, 20, 30]}, "turn_on", {"rgb_color": [10, 20, 30]}),
+    ("light.dimmable", "set_light", {"kelvin": 3000}, "turn_on", {"color_temp_kelvin": 3000}),
+    ("fan.ordinary", "set_fan_speed", {"level": 60}, "set_percentage", {"percentage": 60}),
+    ("climate.ordinary", "set_temperature", {"temperature": 21},
+     "set_temperature", {"temperature": 21}),
+    ("climate.ordinary", "set_hvac_mode", {"mode": "cool"}, "set_hvac_mode", {"hvac_mode": "cool"}),
+    ("climate.ordinary", "set_preset", {"mode": "eco"}, "set_preset_mode", {"preset_mode": "eco"}),
+    ("cover.ordinary", "close_blind", {}, "close_cover", {}),
+    ("cover.ordinary", "set_blind_position", {"level": 40},
+     "set_cover_position", {"position": 40}),
+    ("media_player.television", "stop", {}, "media_stop", {}),
+    ("media_player.television", "mute", {}, "volume_mute", {"is_volume_muted": True}),
+    ("media_player.television", "seek", {"position": 45}, "media_seek", {"seek_position": 45}),
+    ("media_player.television", "shuffle", {"enabled": True}, "shuffle_set", {"shuffle": True}),
+    ("media_player.television", "repeat", {"mode": "one"}, "repeat_set", {"repeat": "one"}),
+    ("media_player.television", "source", {"mode": "HDMI"}, "select_source", {"source": "HDMI"}),
+])
+async def test_ordinary_typed_controls_use_exact_service_and_original_context(
+    ordinary_devices, eid, action, args, service, data,
+):
+    """Feature/argument validation and current role checks precede exact service admission."""
+    if not import_module("custom_components.codex_assist.satellite_runtime").satellite_tools_supported():
+        pytest.skip("Modern typed tools required")
+    o = ordinary_devices
+    tools = import_module("custom_components.codex_assist.guest_control")
+    prepared_type = import_module("custom_components.codex_assist.voice_match").PreparedRequest
+    tool_type = import_module("custom_components.codex_assist.protected_devices").ProtectedDeviceTool
+    context = Context(user_id="original-kiosk")
+    prepared = prepared_type("Synthetic command", "", None, None, verified=True)
+    auth = tools.GuestAuthorization(
+        context, prepared, "guest", o.e.satellite.entity_id,
+        request_is_current=lambda ctx, req: ctx is context and req is prepared,
+        selected_role=lambda: "guest",
+    )
+    calls = []
+
+    async def record(call):
+        calls.append(call)
+
+    o.e.hass.services.async_register(eid.partition(".")[0], service, record)
+    result = await tool_type(auth, []).async_call(
+        o.e.hass, llm.ToolInput(
+            tool_name=tool_type.name, tool_args={"action": action, "entity_ids": [eid], **args},
+        ), llm.LLMContext(
+            platform="codex_assist", context=context, assistant="conversation", language="en",
+            device_id=None,
+        ),
+    )
+    assert not result.error and result.data["completed"] == 1
+    assert len(calls) == 1 and calls[0].context is context
+    assert dict(calls[0].data) == {"entity_id": eid, **data}
+    assert context.user_id == "original-kiosk"
+
+
+@pytest.mark.parametrize(("eid", "action", "args"), [
+    ("light.dimmable", "set_light", {"rgb": [999, 0, 0]}),
+    ("light.dimmable", "set_light", {"level": float("nan")}),
+    ("light.dimmable", "set_light", {"kelvin": 8000}),
+    ("climate.ordinary", "set_temperature", {"temperature": 90}),
+    ("climate.ordinary", "set_hvac_mode", {"mode": "not-a-mode"}),
+    ("media_player.television", "seek", {"position": 500}),
+    ("media_player.television", "source", {"mode": "private-url"}),
+    ("cover.ordinary", "unlock", {}),
+])
+async def test_invalid_or_unsupported_ordinary_capabilities_remain_denied(
+    ordinary_devices, eid, action, args,
+):
+    """Invalid values and invented capabilities are not a service-call escape hatch."""
+    o = ordinary_devices
+    assert not (await o.caps.check(
+        o.e.hass, (eid,), guest_role_id="guest", action=action, args=args,
+    )).allowed
+
+
+@pytest.mark.parametrize("change", [
+    "door", "garage", "hidden_class", "read_only", "unexposed", "unsupported_feature",
+])
+async def test_ordinary_expansion_preserves_security_exposure_and_role_boundaries(
+    ordinary_devices, change,
+):
+    """Even owners cannot use the ordinary-blind vocabulary to open doors or garages."""
+    o = ordinary_devices
+    eid, action, args = "cover.ordinary", "open_blind", {}
+    if change in {"door", "garage"}:
+        state = o.e.hass.states.get(eid)
+        o.e.hass.states.async_set(eid, "open", {
+            **state.attributes, "device_class": "garage" if change == "garage" else "door",
+        })
+    elif change == "hidden_class":
+        o.e.store.roles["guest"]["attributes"] = {"deny": ["device_class"]}
+    elif change == "read_only":
+        o.e.store.roles["guest"]["allow"]["entities"]["entity_ids"][eid]["control"] = False
+    elif change == "unexposed":
+        async_expose_entity(o.e.hass, "conversation", eid, False)
+    else:
+        o.e.hass.states.async_set(eid, "open", {"device_class": "blind", "supported_features": 0})
+    o.e.evaluator.invalidate()
+    assert not (await o.caps.check(
+        o.e.hass, (eid,), guest_role_id="guest", action=action, args=args,
+    )).allowed
+    if change in {"door", "garage"}:
+        assert not (await o.caps.check(
+            o.e.hass, (eid,), user_id="owner", action=action, args=args,
+        )).allowed
+
+
+async def test_richer_state_projection_obeys_field_masks_and_never_returns_raw_attributes(
+    ordinary_devices,
+):
+    """Volume/brightness/temperature are readable only when permitted; private fields stay out."""
+    o = ordinary_devices
+    eid = "media_player.television"
+    state = o.e.hass.states.get(eid)
+    o.e.hass.states.async_set(eid, "playing", {**state.attributes, "private_token": "synthetic"})
+    o.e.store.roles["guest"]["attributes"] = {"deny": ["media_title"]}
+    o.e.evaluator.invalidate()
+    result = await o.caps.project(o.e.hass, (eid,), guest_role_id="guest")
+    assert result["available"]
+    attrs = result["entities"][0]["attributes"]
+    assert attrs["volume_level"] == 0.4 and attrs["source_list"] == ["HDMI", "TV"]
+    assert "media_title" not in attrs and "private_token" not in attrs
+    assert "media_title" not in attrs["readable_fields"]
+    climate = await o.caps.project(o.e.hass, ("climate.ordinary",), guest_role_id="guest")
+    assert climate["entities"][0]["attributes"]["temperature_unit"] == str(
+        o.e.hass.config.units.temperature_unit,
+    )
+    state = o.e.hass.states.get(eid)
+    o.e.hass.states.async_set(eid, "idle", {"friendly_name": state.name})
+    idle = await o.caps.project(o.e.hass, (eid,), guest_role_id="guest")
+    assert idle["entities"][0]["attributes"]["readable_fields"] == attrs["readable_fields"]
+
+
+@pytest.fixture
 async def native_voice(env, monkeypatch):
     """Real HA STT/TTS pipeline controllers, real RBAC and protected model loop.
 
@@ -406,19 +678,25 @@ async def native_voice(env, monkeypatch):
     e.runtime = voices.runtime_for_entry(entry)
     e.dispatcher._runtime = e.runtime
     state = SimpleNamespace(speaker=None, forged=False, error=False, model_calls=[],
-                            target=IDS[0], tts=[], owner=None)
+                            target=IDS[0], tts=[], owner=None,
+                            text="Turn on the requested lamp", revision="a" * 32,
+                            last_wire=None, replay=False)
 
     async def recognise(metadata, stream):
         state.owner = asyncio.current_task()
         assert b"".join([part async for part in stream])
         wire = e.packets.encode(
-            e.state.key, "Turn on the requested lamp",
+            e.state.key, state.text,
             voice="profile" if state.speaker else None,
-            revision="a" * 32 if state.speaker else None,
+            revision=state.revision if state.speaker else None,
             ha_user_id=state.speaker,
         )
+        if state.replay:
+            wire = state.last_wire
+        else:
+            state.last_wire = wire
         return stt.SpeechResult(
-            "Turn on the requested lamp" if state.forged else wire,
+            state.text if state.forged else wire,
             stt.SpeechResultState.SUCCESS,
         )
 
@@ -490,6 +768,7 @@ async def native_voice(env, monkeypatch):
     yield SimpleNamespace(
         env=e, state=state, run=run, entry=entry, pipeline=pipeline,
         handler=handler, profile=profile, stt_adapter=stt_adapter,
+        model_type=Model,
     )
     e.runtime.handoffs.clear()
 
@@ -614,7 +893,8 @@ async def test_hook_to_native_stt_protected_tools_and_tts(hooked_voice, speaker,
     assert len(h.n.env.calls) == int(allowed)
     assert h.fallback == []
     assert h.n.state.tts == [
-        "The command was sent." if allowed else "This voice request is not authorised.",
+        f"Sent the turn on request to PRIVATE {target}."
+        if allowed else "The requested device command could not be completed.",
     ]
     assert h.satellite.context is context
     if allowed:
@@ -888,7 +1168,8 @@ async def test_real_esphome_audio_entry_reaches_protected_native_pipeline(
     await h.run()
     assert len(h.n.env.calls) == int(allowed)
     assert h.n.state.tts == [
-        "The command was sent." if allowed else "This voice request is not authorised.",
+        f"Sent the turn on request to PRIVATE {target}."
+        if allowed else "The requested device command could not be completed.",
     ]
     if allowed:
         assert h.n.env.calls[0][3].user_id is None
@@ -929,6 +1210,501 @@ async def test_real_esphome_reconnect_requires_a_new_binding(native_esphome_voic
     await h.run()
     assert len(h.n.env.calls) == 2
     assert h.adapter._bindings[h.satellite.entity_id][0] is not old_connection
+
+
+@pytest.fixture
+def continuing_voice(native_esphome_voice, monkeypatch):
+    """Only activity detection is simulated; native stages and admissions remain real."""
+    h = native_esphome_voice
+    monkeypatch.setattr(h.module, "SpeechActivity", lambda: SimpleNamespace(
+        process=lambda audio: True,
+    ))
+    return h
+
+
+async def test_native_continuation_retains_data_with_fresh_turns(continuing_voice):
+    """Retain plain dialogue but renew Context, admission and tools on each turn."""
+    h = continuing_voice
+    await h.run()
+    state = h.adapter._conversations[h.satellite.entity_id][1]
+    assert state.pending_speech and state.deadline is None and state.timer is None
+    h.satellite.tts_response_finished()
+    assert state.deadline is not None
+    assert 7.9 <= state.timer.when() - asyncio.get_running_loop().time() <= 8
+    timer = state.timer
+    h.satellite.tts_response_finished()
+    assert state.timer is timer
+    h.n.state.text = "And the other one?"
+    await h.run()
+    assert timer.cancelled()
+    assert len(h.n.env.calls) == 2
+    assert len(h.n.state.model_calls) == 2
+    second = h.n.state.model_calls[1]["input_items"]
+    assert second[0]["role"] == "user"
+    assert second[0]["content"].endswith(": Turn on the requested lamp")
+    assert second[-1] == {"role": "user", "content": "And the other one?"}
+    assert all(row.get("role") in {"user", "assistant"} for row in second)
+    assert not h.adapter.ingress._pending and not h.adapter.ingress._active
+    assert all(event.data["intent_output"]["continue_conversation"]
+               for event in h.events if event.type == "intent-end")
+    assert h.n.env.calls[0][3] is not h.n.env.calls[1][3]
+
+
+async def test_fallback_pipeline_boundary_opens_window(continuing_voice):
+    """Devices without a playback callback open the window at the next pipeline."""
+    h = continuing_voice
+    await h.run()
+    # No playback callback: the native request for the next pipeline is fallback.
+    await h.run()
+    assert len(h.n.env.calls) == 2
+    assert len(h.n.state.model_calls[1]["input_items"]) == 3
+
+
+async def test_speech_after_deadline_cannot_restart_the_window(continuing_voice):
+    """A late transcript must not execute even if the timer callback is delayed."""
+    h = continuing_voice
+    await h.run()
+    h.satellite.tts_response_finished()
+    state = h.adapter._conversations[h.satellite.entity_id][1]
+    state.deadline = time.monotonic() - 1
+    await h.run()
+    assert len(h.n.env.calls) == 1 and len(h.n.state.model_calls) == 1
+    assert not state.pending_speech and state.timer is None
+    assert not [event for event in h.events if event.type == "intent-end"][-1].data[
+        "intent_output"
+    ]["continue_conversation"]
+
+
+@pytest.mark.parametrize("change", ["speaker", "profile", "visibility", "disconnect"])
+async def test_native_continuation_shares_only_currently_permitted_context(
+    continuing_voice, change,
+):
+    """Speaker/profile/reconnect keep shared context; a narrower projection hides it."""
+    h = continuing_voice
+    h.n.state.speaker = "child"
+    await h.run()
+    if change == "speaker":
+        h.n.state.speaker = "adult"
+    elif change == "profile":
+        h.n.state.revision = "b" * 32
+    elif change == "visibility":
+        async_expose_entity(h.n.env.hass, "conversation", IDS[1], False)
+    else:
+        h.runtime.async_on_disconnect()
+        assert not h.adapter._conversations
+        h.client._connection = h.connection()
+        h.runtime.async_on_connect(h.n.env.hass, h.runtime.device_info, h.runtime.api_version)
+    await h.run()
+    assert len(h.n.env.calls) == 2
+    items = h.n.state.model_calls[1]["input_items"]
+    if change == "visibility":
+        assert items == [{"role": "user", "content": h.n.state.text}]
+    else:
+        assert len(items) == 3
+        assert items[0]["content"].endswith(": " + h.n.state.text)
+
+
+@pytest.mark.parametrize("invalid", ["forged", "replay"])
+async def test_native_followup_cannot_reuse_identity_evidence(continuing_voice, invalid):
+    """Forged or replayed follow-ups cannot borrow the previous speaker's grant."""
+    h = continuing_voice
+    await h.run()
+    setattr(h.n.state, invalid, True)
+    await h.run()
+    assert len(h.n.env.calls) == 1
+    assert len(h.n.state.model_calls) == 1
+    assert h.n.state.tts == (
+        ["Sent the turn on request to PRIVATE light.guest.", "This voice request is not authorised."]
+        if invalid == "replay" else ["Sent the turn on request to PRIVATE light.guest."]
+    )
+    assert not h.adapter._conversations[h.satellite.entity_id][1].pending_speech
+    assert not [event for event in h.events if event.type == "intent-end"][-1].data[
+        "intent_output"
+    ]["continue_conversation"]
+
+
+async def test_native_stop_phrase_ends_without_model_or_continuation(continuing_voice):
+    """A freshly admitted stop phrase closes memory without entering the model."""
+    h = continuing_voice
+    await h.run()
+    h.n.state.text = "That's all."
+    await h.run()
+    assert len(h.n.env.calls) == 1 and len(h.n.state.model_calls) == 1
+    assert h.n.state.tts[-1] == "Okay."
+    assert not [event for event in h.events if event.type == "intent-end"][-1].data[
+        "intent_output"
+    ]["continue_conversation"]
+    state = h.adapter._conversations[h.satellite.entity_id][1]
+    assert not state.pending_speech and state.timer is None
+    # "That's all" ends listening without deleting the shared conversation.
+    await h.run()
+    assert len(h.n.state.model_calls) == 1
+
+
+async def test_native_silent_capture_expiry_cancels_without_reply_loop(
+    continuing_voice, monkeypatch,
+):
+    """Silence cancels native capture and disables device continuation without TTS."""
+    h = continuing_voice
+    await h.run()
+    h.satellite.tts_response_finished()
+    connection, state = h.adapter._conversations[h.satellite.entity_id]
+    started = asyncio.Event()
+
+    async def silence(metadata, stream):
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(h.n.stt_adapter, "async_process_audio_stream", silence)
+    api = import_module("aioesphomeapi")
+    await h.satellite.handle_pipeline_start("", 0, api.VoiceAssistantAudioSettings(), None)
+    task = h.satellite._pipeline_task
+    async with asyncio.timeout(5):
+        await started.wait()
+    h.adapter._expire_window(h.satellite, connection, state)
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not h.adapter._conversations
+    assert len(h.n.state.tts) == 1 and len(h.n.state.model_calls) == 1
+    assert not h.adapter.ingress._pending and not h.adapter.ingress._active
+    last = [event for event in h.events if event.type == "intent-end"][-1]
+    assert last.data["intent_output"]["continue_conversation"] is False
+    assert last.data["intent_output"]["response"]["speech"]["plain"]["speech"] == ""
+    assert h.events[-1].type == "run-end"
+
+
+async def test_native_intent_event_serializes_continuation_flag(continuing_voice, monkeypatch):
+    """Real ESPHome serialization sends one then zero for the continuation flag."""
+    h = continuing_voice
+    await h.run()
+    native = type(h.satellite)
+    client_type = type(h.client)
+    sent = []
+    monkeypatch.setattr(client_type, "send_voice_assistant_event",
+                        lambda self, kind, data: sent.append((kind, data)))
+    intent_end = next(event for event in h.events if event.type == "intent-end")
+    native.on_pipeline_event(h.satellite, intent_end)
+    assert sent[-1][1]["continue_conversation"] == "1"
+    connection, state = h.adapter._conversations[h.satellite.entity_id]
+    h.adapter._expire_window(h.satellite, connection, state)
+    native.on_pipeline_event(h.satellite, h.events[-2])
+    assert sent[-1][1]["continue_conversation"] == "0"
+
+
+async def test_playback_hook_restored_only_when_owned(continuing_voice):
+    """Explicit de-enrollment restores the original native playback callback."""
+    h = continuing_voice
+    original = type(h.satellite).tts_response_finished
+    await h.run()
+    h.n.env.hass.config_entries.async_update_entry(h.n.entry, options={})
+    await h.adapter.async_close()
+    assert not h.adapter._conversations
+    assert h.satellite.tts_response_finished.__func__ is original
+
+
+async def test_replacement_retains_shared_memory_but_restores_old_playback_hook(continuing_voice):
+    """Replacement cancels microphone state, not the shared permitted dialogue."""
+    h = continuing_voice
+    await h.run()
+    h.satellite.tts_response_finished()
+    timer = h.adapter._conversations[h.satellite.entity_id][1].timer
+    replacement = h.replace_entity()
+    assert timer.cancelled() and not h.adapter._conversations
+    assert "tts_response_finished" not in h.satellite.__dict__
+    assert "tts_response_finished" in replacement.__dict__
+    await h.run(replacement)
+    assert len(h.n.state.model_calls[1]["input_items"]) == 3
+
+
+async def test_newer_peer_playback_hook_is_never_overwritten(continuing_voice):
+    """Cleanup leaves a newer foreign callback untouched."""
+    h = continuing_voice
+
+    def peer():
+        return None
+
+    h.satellite.tts_response_finished = peer
+    h.n.env.hass.config_entries.async_update_entry(h.n.entry, options={})
+    await h.adapter.async_close()
+    assert h.satellite.tts_response_finished is peer
+
+
+@pytest.mark.parametrize("change", [
+    "same", "speaker", "permitted_speaker", "hidden", "replay", "storage_failure",
+])
+async def test_native_two_turn_music_choice_requires_fresh_authority(
+    continuing_voice, monkeypatch, change,
+):
+    """Only the same freshly verified subject can consume a saved music choice."""
+    import json  # noqa: PLC0415
+
+    h = continuing_voice
+    e = h.n.env
+    types = import_module("custom_components.codex_assist.codex_client")
+    entry = MockConfigEntry(domain="music_assistant")
+    entry.add_to_hass(e.hass)
+    player = er.async_get(e.hass).async_get_or_create(
+        "media_player", "music_assistant", "test-player", config_entry=entry,
+        suggested_object_id="test",
+    ).entity_id
+    e.hass.states.async_set(player, "idle", {"friendly_name": "Test speaker"})
+    async_expose_entity(e.hass, "conversation", player, True)
+    store = e.hass.data[DATA_RBAC].store
+    store.roles["guest"]["allow"]["entities"]["entity_ids"][player] = {
+        "read": True, "control": True,
+    }
+    e.hass.data[DATA_RBAC].evaluator = Evaluator(e.hass, store)
+    played, tokens, held = [], [], []
+
+    async def search(call):
+        return {"tracks": [{"uri": "library://track/1", "name": "Test song",
+                            "media_type": "track"}]}
+
+    async def play(call):
+        played.append(call)
+
+    e.hass.services.async_register(
+        "music_assistant", "search", search, supports_response=SupportsResponse.ONLY,
+    )
+    e.hass.services.async_register("music_assistant", "play_media", play)
+
+    async def stream_turn(self, **kwargs):
+        h.n.state.model_calls.append(kwargs)
+        items = kwargs["input_items"]
+        if h.n.state.text == "Find a song":
+            if items[-1].get("type") == "function_call_output":
+                result = json.loads(items[-1]["output"])
+                tokens.append(result["results"][0]["candidate_id"])
+                yield types.CodexTextDelta("Would you like this version?")
+                return
+            args = {"action": "play", "query": "Test song", "speaker": player}
+        else:
+            assert not any(row.get("type") == "function_call" for row in items)
+            args = {"action": "play", "candidate_id": tokens[0], "speaker": player}
+        yield types.CodexToolCallDelta(types.CodexToolCall(
+            "music-call", "codex_assist__guest_music", args,
+        ))
+
+    monkeypatch.setattr(h.n.model_type, "stream_turn", stream_turn)
+    original_handler = h.module.async_entry_voice_handler
+
+    async def capture(_hass, _entry, _profile, payload, *args):
+        held.append(tuple(payload["tools"]))
+        return await original_handler(_hass, _entry, _profile, payload, *args)
+
+    monkeypatch.setattr(h.module, "async_entry_voice_handler", capture)
+    h.n.state.text = "Find a song"
+    await h.run()
+    state = h.adapter._history._satellites[h.satellite.entity_id]
+    assert tokens and tokens[0] in state["choices"]["items"] and not played
+    assert any(tokens[0] in row["content"] for turn in state["turns"] for row in turn["messages"])
+    assert not held[0][-1]._authorization.guest.valid()
+    h.n.state.text = "Yes, that one"
+    if change == "speaker":
+        h.n.state.speaker = "child"
+    elif change == "permitted_speaker":
+        store.roles["child"]["allow"]["entities"]["entity_ids"][player] = {
+            "read": True, "control": True,
+        }
+        e.hass.data[DATA_RBAC].evaluator = Evaluator(e.hass, store)
+        h.n.state.speaker = "child"
+    elif change == "hidden":
+        async_expose_entity(e.hass, "conversation", player, False)
+    elif change == "replay":
+        h.n.state.replay = True
+    elif change == "storage_failure":
+        async def fail_save(data):
+            raise OSError("Synthetic storage failure")
+
+        monkeypatch.setattr(h.adapter._history._store, "async_save", fail_save)
+    await h.run()
+    assert len(played) == int(change in {"same", "permitted_speaker"})
+    if change in {"same", "permitted_speaker"}:
+        assert held[0][-1] is not held[1][-1]
+        assert played[0].data["media_id"] == "library://track/1"
+        assert played[0].context.user_id is None
+        assert not h.adapter._history._satellites[h.satellite.entity_id]["choices"]["items"]
+        await h.run()  # same candidate token cannot be replayed in a third turn
+        assert len(played) == 1
+
+
+async def test_native_store_restore_keeps_context_but_requires_fresh_verification(
+    continuing_voice,
+):
+    """A fresh journal/connection restores text without recovering any old grant."""
+    h = continuing_voice
+    await h.run()
+    history_module = import_module("custom_components.codex_assist.protected_history")
+    h.runtime.async_on_disconnect()
+    h.client._connection = h.connection()
+    h.runtime.async_on_connect(h.n.env.hass, h.runtime.device_info, h.runtime.api_version)
+    h.adapter._history = history_module.SharedSatelliteHistory(
+        h.n.env.hass, h.n.entry.entry_id, [h.satellite.entity_id],
+    )
+    assert not h.adapter._conversations
+    h.n.state.forged = True
+    await h.run()
+    assert len(h.n.state.model_calls) == 1
+    h.n.state.forged = False
+    h.n.state.speaker = "child"
+    await h.run()
+    assert len(h.n.state.model_calls) == 2
+    assert len(h.n.state.model_calls[-1]["input_items"]) == 3
+    assert len(h.n.env.calls) == 2
+
+
+async def test_native_private_turn_is_hidden_from_child_without_erasing_it(continuing_voice):
+    """An owner's broad context cannot be recalled or laundered through a child turn."""
+    h = continuing_voice
+    h.n.state.speaker = "owner"
+    await h.run()
+    h.n.state.speaker = "child"
+    await h.run()
+    assert len(h.n.state.model_calls[-1]["input_items"]) == 1
+    h.n.state.speaker = "owner"
+    await h.run()
+    assert len(h.n.state.model_calls[-1]["input_items"]) == 5
+
+
+async def test_native_silence_stop_and_forget_have_separate_durable_semantics(continuing_voice):
+    """Silence/stop preserve dialogue; an authorised explicit forget removes it."""
+    h = continuing_voice
+    await h.run()
+    h.satellite.tts_response_finished()
+    connection, state = h.adapter._conversations[h.satellite.entity_id]
+    h.adapter._expire_window(h.satellite, connection, state)
+    assert not h.adapter._conversations
+    await h.run()
+    assert len(h.n.state.model_calls[-1]["input_items"]) == 3
+    h.n.state.text = "That's all."
+    await h.run()
+    assert len(h.n.state.model_calls) == 2
+    h.n.state.text = "Turn on the requested lamp"
+    await h.run()
+    assert len(h.n.state.model_calls[-1]["input_items"]) == 5
+    h.n.state.text = "Forget this conversation."
+    await h.run()
+    assert len(h.n.state.model_calls) == 3
+    h.n.state.text = "Turn on the requested lamp"
+    await h.run()
+    assert h.n.state.model_calls[-1]["input_items"] == [
+        {"role": "user", "content": h.n.state.text},
+    ]
+
+
+@pytest.mark.parametrize("change", ["none", "group_id", "group_name", "membership", "exposure", "alias"])
+async def test_native_room_group_resolution_replans_wrong_direction_and_rechecks_metadata(
+    reference_catalogue, continuing_voice, monkeypatch, change,
+):
+    """Use exact members with new permissions, never a group service or stale alias."""
+    r, h = reference_catalogue, continuing_voice
+    h.n.state.speaker = "owner"
+    h.n.state.text = "Turn the reading room lights off"
+    dr.async_get(r.e.hass).async_update_device(r.e.satellite.device_id, area_id=r.area.id)
+    types = import_module("custom_components.codex_assist.codex_client")
+    rounds = []
+
+    async def stream_turn(self, **kwargs):
+        rounds.append(kwargs)
+        if len(rounds) == 1:
+            operation = "turn_on"  # deliberately wrong: the whole batch must be vetoed
+        else:
+            operation = "turn_off"
+            if change == "membership":
+                r.e.hass.states.async_set(r.group.entity_id, "on", {
+                    "friendly_name": "Reading room lights", "entity_id": [IDS[0], IDS[2]],
+                })
+            elif change == "exposure":
+                async_expose_entity(r.e.hass, "conversation", IDS[1], False)
+            elif change == "alias":
+                er.async_get(r.e.hass).async_update_entity(IDS[0], aliases={"Changed label"})
+        yield types.CodexToolCallDelta(types.CodexToolCall(
+            f"round-{len(rounds)}", "codex_assist__guest_on_off",
+            {"operation": operation, "entity_ids": (
+                [r.group.entity_id] if change == "group_id"
+                else ["Reading room lights"] if change == "group_name" else list(IDS[:2])
+            )},
+        ))
+
+    monkeypatch.setattr(h.n.model_type, "stream_turn", stream_turn)
+    await h.run()
+    assert len(rounds) == 2
+    assert "Reading Room" in rounds[0]["instructions"] and "Desk lamp" in rounds[0]["instructions"]
+    assert '"members": ["light.guest", "light.child"]' not in rounds[0]["instructions"]
+    assert '"members": ["light.child", "light.guest"]' in rounds[0]["instructions"]
+    assert '"current_room": true' in rounds[0]["instructions"]
+    assert len(r.e.calls) == (2 if change in {"none", "group_id", "group_name"} else 0)
+    assert all(call[1] == "turn_off" and call[2]["entity_id"] in IDS[:2] for call in r.e.calls)
+    assert not any(call[2]["entity_id"] == r.group.entity_id for call in r.e.calls)
+
+
+@pytest.mark.parametrize("revoke_second", [False, True])
+async def test_native_compound_ordinary_controls_and_partial_spoken_feedback(
+    continuing_voice, ordinary_devices, monkeypatch, revoke_second,
+):
+    """Fresh native evidence can stop generic playback and dim; revocation stops remaining effects."""
+    h, o = continuing_voice, ordinary_devices
+    h.n.state.text = "Stop playback and dim the lamp"
+    types = import_module("custom_components.codex_assist.codex_client")
+    calls = []
+
+    async def stop(call):
+        calls.append(call)
+        if revoke_second:
+            o.e.store.roles["guest"]["allow"]["entities"]["entity_ids"][
+                "light.dimmable"
+            ]["control"] = False
+            o.e.evaluator.invalidate()
+
+    async def dim(call):
+        calls.append(call)
+
+    o.e.hass.services.async_register("media_player", "media_stop", stop)
+    o.e.hass.services.async_register("light", "turn_on", dim)
+
+    async def stream_turn(self, **kwargs):
+        yield types.CodexToolCallDelta(types.CodexToolCall(
+            "stop", "codex_assist__ordinary_devices",
+            {"action": "stop", "entity_ids": ["media_player.television"]},
+        ))
+        yield types.CodexToolCallDelta(types.CodexToolCall(
+            "dim", "codex_assist__ordinary_devices",
+            {"action": "set_light", "entity_ids": ["light.dimmable"], "level": 25},
+        ))
+
+    monkeypatch.setattr(h.n.model_type, "stream_turn", stream_turn)
+    await h.run()
+    assert len(calls) == (1 if revoke_second else 2)
+    assert calls[0].service == "media_stop"
+    assert all(call.context is calls[0].context for call in calls)
+    assert calls[0].context.user_id is None
+    assert len(h.n.state.tts) == 1
+    if revoke_second:
+        assert h.n.state.tts[0].startswith("Some commands were sent.")
+    else:
+        assert calls[1].data["brightness_pct"] == 25
+        assert "stop" in h.n.state.tts[0] and "set light" in h.n.state.tts[0]
+    assert not h.adapter.ingress._active and not h.adapter.ingress._pending
+
+
+async def test_post_action_read_revocation_cannot_speak_a_stale_success_reply(
+    continuing_voice,
+):
+    """The final admission denial must override a handler's earlier private acknowledgement."""
+    h = continuing_voice
+    e = h.n.env
+
+    async def revoke_after_admission(call):
+        e.calls.append(call)
+        e.store.roles["guest"]["allow"]["entities"]["entity_ids"][IDS[0]]["read"] = False
+        e.evaluator.invalidate()
+
+    e.hass.services.async_register("light", "turn_on", revoke_after_admission)
+    await h.run()
+    assert len(e.calls) == 1
+    assert h.n.state.tts == ["This voice request is not authorised."]
+    assert not h.adapter._conversations[h.satellite.entity_id][1].pending_speech
+    assert not h.adapter._history._satellites
 
 
 @pytest.mark.parametrize(
@@ -973,7 +1749,8 @@ async def test_replaced_native_entity_cannot_return_to_ordinary_pipeline(
     assert ordinary == [], "Replacing the entity lost the per-instance guard"
     assert len(h.n.env.calls) == int(allowed)
     assert h.n.state.tts == [
-        "The command was sent." if allowed else "This voice request is not authorised.",
+        f"Sent the turn on request to PRIVATE {target}."
+        if allowed else "The requested device command could not be completed.",
     ]
 
 
@@ -1164,7 +1941,8 @@ async def test_native_stt_protected_model_rbac_execution_and_tts(
     assert len(n.env.calls) == int(allowed)
     assert len(n.state.model_calls) == 1
     assert n.state.tts == [
-        "The command was sent." if allowed else "This voice request is not authorised.",
+        f"Sent the turn on request to PRIVATE {target}."
+        if allowed else "The requested device command could not be completed.",
     ]
     assert sum(event.type == "run-start" for event in events) == 1
     assert sum(event.type == "run-end" for event in events) == 1
