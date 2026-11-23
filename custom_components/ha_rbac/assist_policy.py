@@ -550,6 +550,14 @@ async def async_project_voice_context(
 VOICE_REFERENCE_VERSION = 1
 VOICE_CAPABILITY_VERSION = 1
 TIMER_POLICY_VERSION = 1
+TIMER_CONTROL_POLICY_VERSION = 1
+
+
+async def async_check_timer_control_access(hass, satellite_ids, *, action, user_id):
+    """Check finite exact-ID UI controls as the authenticated account, never a guest override."""
+    from .timer_policy import check_control  # noqa: PLC0415
+
+    return await check_control(hass, satellite_ids, action=action, user_id=user_id)
 
 
 async def async_check_timer_access(hass, satellite_ids, **kwargs):

@@ -198,3 +198,43 @@ async def test_owner_still_needs_exposure_and_exact_supported_timer_target(hass,
     assert not (await assist_policy.async_check_timer_access(
         hass, (e.satellite.entity_id,), action="cancel", user_id="speaker",
     )).allowed
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "cancel", "add", "remove"])
+async def test_exact_id_ui_contract_requires_current_target_control(hass, timer_policy, action):
+    """The new UI contract is account-bound and does not widen the voice vocabulary."""
+    e = timer_policy
+    assert assist_policy.TIMER_CONTROL_POLICY_VERSION == 1
+    assert (await assist_policy.async_check_timer_control_access(
+        hass, (e.satellite.entity_id,), action=action, user_id="speaker",
+    )).allowed
+    e.store.roles["guest"]["allow"]["entities"]["entity_ids"][e.satellite.entity_id][
+        "control"
+    ] = False
+    e.evaluator.invalidate()
+    assert not (await assist_policy.async_check_timer_control_access(
+        hass, (e.satellite.entity_id,), action=action, user_id="speaker",
+    )).allowed
+    if action != "cancel":
+        assert not (await assist_policy.async_check_timer_access(
+            hass, (e.satellite.entity_id,), action=action, user_id="speaker",
+        )).allowed
+
+
+@pytest.mark.parametrize("action", ["pause", "resume", "cancel", "add", "remove"])
+async def test_exact_id_ui_operation_tier_denial_is_enforced(hass, timer_policy, action):
+    """A specific timer operation denial remains stronger than entity control."""
+    e = timer_policy
+    e.store.roles["guest"]["tiers"] = {"deny": [f"timer.{action}"]}
+    e.evaluator.invalidate()
+    assert not (await assist_policy.async_check_timer_control_access(
+        hass, (e.satellite.entity_id,), action=action, user_id="speaker",
+    )).allowed
+
+
+@pytest.mark.parametrize("action", ["start", "cancel_all", "execute_service", None, True, []])
+async def test_exact_id_ui_contract_does_not_become_a_generic_timer_api(hass, timer_policy, action):
+    """Only finite per-timer mutations can be admitted."""
+    assert not (await assist_policy.async_check_timer_control_access(
+        hass, (timer_policy.satellite.entity_id,), action=action, user_id="speaker",
+    )).allowed
