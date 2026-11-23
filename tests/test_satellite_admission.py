@@ -7,6 +7,7 @@ is exercised. The session validator stands in for a future authenticated adapter
 import asyncio
 import sys
 import time
+from collections import OrderedDict
 from dataclasses import replace
 from importlib import import_module
 from types import ModuleType, SimpleNamespace
@@ -30,6 +31,17 @@ from testsupport.ha_test import MockConfigEntry
 
 IDS = ("light.guest", "light.child", "light.adult", "light.other")
 DENIED = {"status": "denied", "completed": 0}
+
+
+def receipt_response(kwargs, types):
+    """Script tools-disabled receipt prose, never an additional control proposal."""
+    if (kwargs.get("text_format") or {}).get("name") != "action_receipt":
+        return None
+    assert kwargs["tools"] == []
+    assert kwargs["input_items"] == [
+        {"role": "user", "content": "Acknowledge that you heard me."},
+    ]
+    return types.CodexTextDelta('{"reply":"Understood."}')
 
 
 def role(name, ids):
@@ -668,6 +680,8 @@ async def native_voice(env, monkeypatch):
     voices = import_module(prefix + "voice_match")
     adapter_type = import_module(prefix + "voice_match_stt").VoiceMatchSttAdapter
     client_types = import_module(prefix + "codex_client")
+    # Isolate cold/warm receipt request counts across tests and prior personalities.
+    monkeypatch.setattr(import_module(prefix + "action_receipts"), "_RECEIPTS", OrderedDict())
 
     e = env
     assert await async_setup_component(e.hass, "assist_pipeline", {})
@@ -730,6 +744,9 @@ async def native_voice(env, monkeypatch):
     class Model:
         async def stream_turn(self, **kwargs):
             state.model_calls.append(kwargs)
+            if receipt := receipt_response(kwargs, client_types):
+                yield receipt
+                return
             yield client_types.CodexTextDelta("Premature unverified success must never be spoken.")
             yield client_types.CodexToolCallDelta(client_types.CodexToolCall(
                 "call-1", "codex_assist__guest_on_off", command(state.target),
@@ -893,7 +910,7 @@ async def test_hook_to_native_stt_protected_tools_and_tts(hooked_voice, speaker,
     assert len(h.n.env.calls) == int(allowed)
     assert h.fallback == []
     assert h.n.state.tts == [
-        f"Sent the turn on request to PRIVATE {target}."
+        "Understood."
         if allowed else "The requested device command could not be completed.",
     ]
     assert h.satellite.context is context
@@ -1168,7 +1185,7 @@ async def test_real_esphome_audio_entry_reaches_protected_native_pipeline(
     await h.run()
     assert len(h.n.env.calls) == int(allowed)
     assert h.n.state.tts == [
-        f"Sent the turn on request to PRIVATE {target}."
+        "Understood."
         if allowed else "The requested device command could not be completed.",
     ]
     if allowed:
@@ -1238,8 +1255,8 @@ async def test_native_continuation_retains_data_with_fresh_turns(continuing_voic
     await h.run()
     assert timer.cancelled()
     assert len(h.n.env.calls) == 2
-    assert len(h.n.state.model_calls) == 2
-    second = h.n.state.model_calls[1]["input_items"]
+    assert len(h.n.state.model_calls) == 3  # two planning calls and one cached-style receipt
+    second = h.n.state.model_calls[2]["input_items"]
     assert second[0]["role"] == "user"
     assert second[0]["content"].endswith(": Turn on the requested lamp")
     assert second[-1] == {"role": "user", "content": "And the other one?"}
@@ -1257,7 +1274,7 @@ async def test_fallback_pipeline_boundary_opens_window(continuing_voice):
     # No playback callback: the native request for the next pipeline is fallback.
     await h.run()
     assert len(h.n.env.calls) == 2
-    assert len(h.n.state.model_calls[1]["input_items"]) == 3
+    assert len(h.n.state.model_calls[2]["input_items"]) == 3
 
 
 async def test_speech_after_deadline_cannot_restart_the_window(continuing_voice):
@@ -1268,7 +1285,7 @@ async def test_speech_after_deadline_cannot_restart_the_window(continuing_voice)
     state = h.adapter._conversations[h.satellite.entity_id][1]
     state.deadline = time.monotonic() - 1
     await h.run()
-    assert len(h.n.env.calls) == 1 and len(h.n.state.model_calls) == 1
+    assert len(h.n.env.calls) == 1 and len(h.n.state.model_calls) == 2
     assert not state.pending_speech and state.timer is None
     assert not [event for event in h.events if event.type == "intent-end"][-1].data[
         "intent_output"
@@ -1296,7 +1313,7 @@ async def test_native_continuation_shares_only_currently_permitted_context(
         h.runtime.async_on_connect(h.n.env.hass, h.runtime.device_info, h.runtime.api_version)
     await h.run()
     assert len(h.n.env.calls) == 2
-    items = h.n.state.model_calls[1]["input_items"]
+    items = h.n.state.model_calls[2]["input_items"]
     if change == "visibility":
         assert items == [{"role": "user", "content": h.n.state.text}]
     else:
@@ -1312,10 +1329,10 @@ async def test_native_followup_cannot_reuse_identity_evidence(continuing_voice, 
     setattr(h.n.state, invalid, True)
     await h.run()
     assert len(h.n.env.calls) == 1
-    assert len(h.n.state.model_calls) == 1
+    assert len(h.n.state.model_calls) == 2
     assert h.n.state.tts == (
-        ["Sent the turn on request to PRIVATE light.guest.", "This voice request is not authorised."]
-        if invalid == "replay" else ["Sent the turn on request to PRIVATE light.guest."]
+        ["Understood.", "This voice request is not authorised."]
+        if invalid == "replay" else ["Understood."]
     )
     assert not h.adapter._conversations[h.satellite.entity_id][1].pending_speech
     assert not [event for event in h.events if event.type == "intent-end"][-1].data[
@@ -1329,7 +1346,7 @@ async def test_native_stop_phrase_ends_without_model_or_continuation(continuing_
     await h.run()
     h.n.state.text = "That's all."
     await h.run()
-    assert len(h.n.env.calls) == 1 and len(h.n.state.model_calls) == 1
+    assert len(h.n.env.calls) == 1 and len(h.n.state.model_calls) == 2
     assert h.n.state.tts[-1] == "Okay."
     assert not [event for event in h.events if event.type == "intent-end"][-1].data[
         "intent_output"
@@ -1338,7 +1355,7 @@ async def test_native_stop_phrase_ends_without_model_or_continuation(continuing_
     assert not state.pending_speech and state.timer is None
     # "That's all" ends listening without deleting the shared conversation.
     await h.run()
-    assert len(h.n.state.model_calls) == 1
+    assert len(h.n.state.model_calls) == 2
 
 
 async def test_native_silent_capture_expiry_cancels_without_reply_loop(
@@ -1365,7 +1382,7 @@ async def test_native_silent_capture_expiry_cancels_without_reply_loop(
     with pytest.raises(asyncio.CancelledError):
         await task
     assert not h.adapter._conversations
-    assert len(h.n.state.tts) == 1 and len(h.n.state.model_calls) == 1
+    assert len(h.n.state.tts) == 1 and len(h.n.state.model_calls) == 2
     assert not h.adapter.ingress._pending and not h.adapter.ingress._active
     last = [event for event in h.events if event.type == "intent-end"][-1]
     assert last.data["intent_output"]["continue_conversation"] is False
@@ -1413,7 +1430,7 @@ async def test_replacement_retains_shared_memory_but_restores_old_playback_hook(
     assert "tts_response_finished" not in h.satellite.__dict__
     assert "tts_response_finished" in replacement.__dict__
     await h.run(replacement)
-    assert len(h.n.state.model_calls[1]["input_items"]) == 3
+    assert len(h.n.state.model_calls[2]["input_items"]) == 3
 
 
 async def test_newer_peer_playback_hook_is_never_overwritten(continuing_voice):
@@ -1470,6 +1487,9 @@ async def test_native_two_turn_music_choice_requires_fresh_authority(
 
     async def stream_turn(self, **kwargs):
         h.n.state.model_calls.append(kwargs)
+        if receipt := receipt_response(kwargs, types):
+            yield receipt
+            return
         items = kwargs["input_items"]
         if h.n.state.text == "Find a song":
             if items[-1].get("type") == "function_call_output":
@@ -1544,11 +1564,11 @@ async def test_native_store_restore_keeps_context_but_requires_fresh_verificatio
     assert not h.adapter._conversations
     h.n.state.forged = True
     await h.run()
-    assert len(h.n.state.model_calls) == 1
+    assert len(h.n.state.model_calls) == 2
     h.n.state.forged = False
     h.n.state.speaker = "child"
     await h.run()
-    assert len(h.n.state.model_calls) == 2
+    assert len(h.n.state.model_calls) == 3
     assert len(h.n.state.model_calls[-1]["input_items"]) == 3
     assert len(h.n.env.calls) == 2
 
@@ -1578,13 +1598,13 @@ async def test_native_silence_stop_and_forget_have_separate_durable_semantics(co
     assert len(h.n.state.model_calls[-1]["input_items"]) == 3
     h.n.state.text = "That's all."
     await h.run()
-    assert len(h.n.state.model_calls) == 2
+    assert len(h.n.state.model_calls) == 3
     h.n.state.text = "Turn on the requested lamp"
     await h.run()
     assert len(h.n.state.model_calls[-1]["input_items"]) == 5
     h.n.state.text = "Forget this conversation."
     await h.run()
-    assert len(h.n.state.model_calls) == 3
+    assert len(h.n.state.model_calls) == 4
     h.n.state.text = "Turn on the requested lamp"
     await h.run()
     assert h.n.state.model_calls[-1]["input_items"] == [
@@ -1606,6 +1626,9 @@ async def test_native_room_group_resolution_replans_wrong_direction_and_rechecks
 
     async def stream_turn(self, **kwargs):
         rounds.append(kwargs)
+        if receipt := receipt_response(kwargs, types):
+            yield receipt
+            return
         if len(rounds) == 1:
             operation = "turn_on"  # deliberately wrong: the whole batch must be vetoed
         else:
@@ -1628,7 +1651,7 @@ async def test_native_room_group_resolution_replans_wrong_direction_and_rechecks
 
     monkeypatch.setattr(h.n.model_type, "stream_turn", stream_turn)
     await h.run()
-    assert len(rounds) == 2
+    assert len(rounds) == (3 if change in {"none", "group_id", "group_name"} else 2)
     assert "Reading Room" in rounds[0]["instructions"] and "Desk lamp" in rounds[0]["instructions"]
     assert '"members": ["light.guest", "light.child"]' not in rounds[0]["instructions"]
     assert '"members": ["light.child", "light.guest"]' in rounds[0]["instructions"]
@@ -1663,6 +1686,9 @@ async def test_native_compound_ordinary_controls_and_partial_spoken_feedback(
     o.e.hass.services.async_register("light", "turn_on", dim)
 
     async def stream_turn(self, **kwargs):
+        if receipt := receipt_response(kwargs, types):
+            yield receipt
+            return
         yield types.CodexToolCallDelta(types.CodexToolCall(
             "stop", "codex_assist__ordinary_devices",
             {"action": "stop", "entity_ids": ["media_player.television"]},
@@ -1683,7 +1709,7 @@ async def test_native_compound_ordinary_controls_and_partial_spoken_feedback(
         assert h.n.state.tts[0].startswith("Some commands were sent.")
     else:
         assert calls[1].data["brightness_pct"] == 25
-        assert "stop" in h.n.state.tts[0] and "set light" in h.n.state.tts[0]
+        assert h.n.state.tts[0] == "Understood."
     assert not h.adapter.ingress._active and not h.adapter.ingress._pending
 
 
@@ -1749,7 +1775,7 @@ async def test_replaced_native_entity_cannot_return_to_ordinary_pipeline(
     assert ordinary == [], "Replacing the entity lost the per-instance guard"
     assert len(h.n.env.calls) == int(allowed)
     assert h.n.state.tts == [
-        f"Sent the turn on request to PRIVATE {target}."
+        "Understood."
         if allowed else "The requested device command could not be completed.",
     ]
 
@@ -1939,9 +1965,9 @@ async def test_native_stt_protected_model_rbac_execution_and_tts(
     n.state.speaker, n.state.target = speaker, target
     events, context = await n.run()
     assert len(n.env.calls) == int(allowed)
-    assert len(n.state.model_calls) == 1
+    assert len(n.state.model_calls) == (2 if allowed else 1)
     assert n.state.tts == [
-        f"Sent the turn on request to PRIVATE {target}."
+        "Understood."
         if allowed else "The requested device command could not be completed.",
     ]
     assert sum(event.type == "run-start" for event in events) == 1
