@@ -1,5 +1,36 @@
 # Proposed in-process Assist policy interface
 
+## Finite cross-satellite timer oracle — development only
+
+`TIMER_POLICY_VERSION=1` adds `async_check_timer_access`, implemented in
+`timer_policy.py`. It accepts exact `assist_satellite` IDs and only `read`,
+`cancel`, `stop` or `cancel_all`. It has no transport, endpoint, state projection,
+service registration or device I/O.
+
+Targets must be enabled, available, exposed ESPHome timer devices. A selected
+restricted guest role or active enrolled speaker supplies current native/RBAC
+read rights; cancellation additionally needs target control rights and the
+open-tier `timer.cancel` policy check. Hidden timer/name/area metadata denies.
+Schedules, inactive/system/unbound accounts, disabled targets and unsupported
+input fail closed. Read-only does not become cancellation authority.
+
+This is a finite timer operation, not forwarding a raw `assist_satellite` service
+or conversation. Existing `BASELINE_DENY` and legacy satellite/guest action
+contracts remain unchanged. The consumer must prove live source admission, limit
+candidates to administrator-owned enrollment, pin native target identity, recheck
+immediately before effects and protect remote data in shared conversation history.
+It may not treat this oracle's point-in-time answer as a persistent grant.
+
+No household role, binding, exposure or policy was changed. This paired source is
+not installed, published or physically accepted. RBAC remains local-only unless
+the owner separately approves publication/deployment.
+
+The 44 timer-oracle cases passed on current/minimum HA in the paired selections;
+current cross-project policy/admission selection passed 246, minimum passed 113
+with 122 unsupported-feature skips. Both source trees passed Ruff and whitespace
+checks. Real roles/registries/timers are exercised with simulated external
+transport, model and native ESPHome action boundaries, not physical kiosks.
+
 ## Handoff checkpoint — development only
 
 The owner chose to keep this RBAC work **local only**. The repository still points

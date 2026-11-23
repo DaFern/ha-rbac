@@ -549,6 +549,14 @@ async def async_project_voice_context(
 
 VOICE_REFERENCE_VERSION = 1
 VOICE_CAPABILITY_VERSION = 1
+TIMER_POLICY_VERSION = 1
+
+
+async def async_check_timer_access(hass, satellite_ids, **kwargs):
+    """Check exact cross-satellite timer read/cancel rights; never execute an action."""
+    from .timer_policy import check  # noqa: PLC0415
+
+    return await check(hass, satellite_ids, **kwargs)
 
 
 async def async_check_voice_capability(hass, entity_ids, **kwargs):
