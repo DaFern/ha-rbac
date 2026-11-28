@@ -25,11 +25,24 @@ GUEST_ACTIONS = {
     "light": frozenset({"turn_on", "turn_off"}),
     "switch": frozenset({"turn_on", "turn_off"}),
     "fan": frozenset({"turn_on", "turn_off"}),
-    "media_player": frozenset({
-        "media_play", "media_pause", "media_next_track", "media_previous_track",
-        "volume_up", "volume_down", "volume_set", "clear_playlist", "play_media",
-        "media_stop", "volume_mute", "media_seek", "shuffle_set", "repeat_set",
-    }),
+    "media_player": frozenset(
+        {
+            "media_play",
+            "media_pause",
+            "media_next_track",
+            "media_previous_track",
+            "volume_up",
+            "volume_down",
+            "volume_set",
+            "clear_playlist",
+            "play_media",
+            "media_stop",
+            "volume_mute",
+            "media_seek",
+            "shuffle_set",
+            "repeat_set",
+        }
+    ),
 }
 MAX_TARGETS = 32
 ENTITY_ID = re.compile(r"[a-z_]+\.[a-z0-9_]+\Z")
@@ -65,14 +78,22 @@ async def async_check_access(
         or not user_id
         or not isinstance(entity_ids, tuple)
         or not 0 < len(entity_ids) <= MAX_TARGETS
-        or any(not isinstance(eid, str) or not ENTITY_ID.fullmatch(eid) for eid in entity_ids)
+        or any(
+            not isinstance(eid, str) or not ENTITY_ID.fullmatch(eid)
+            for eid in entity_ids
+        )
         or not isinstance(attributes, tuple)
         or len(attributes) > 16
-        or any(not isinstance(name, str) or not name or len(name) > 64 for name in attributes)
+        or any(
+            not isinstance(name, str) or not name or len(name) > 64
+            for name in attributes
+        )
         or operation not in {"read", "turn_on", "turn_off"}
         or (operation != "read" and attributes)
-        or (ceiling_user_id is not None
-            and (not isinstance(ceiling_user_id, str) or not ceiling_user_id))
+        or (
+            ceiling_user_id is not None
+            and (not isinstance(ceiling_user_id, str) or not ceiling_user_id)
+        )
     ):
         return AccessDecision(False, "invalid_request")
     rbac = hass.data.get(DATA_RBAC)
@@ -98,10 +119,9 @@ async def async_check_access(
             if permissions.full_access:
                 return AccessDecision(False, "account_not_restricted")
             for eid in entity_ids:
-                if (
-                    not permissions.check_entity(eid, POLICY_READ)
-                    or not user.permissions.check_entity(eid, POLICY_READ)
-                ):
+                if not permissions.check_entity(
+                    eid, POLICY_READ
+                ) or not user.permissions.check_entity(eid, POLICY_READ):
                     return AccessDecision(False, "denied")
                 if any(permissions.attribute_hidden(eid, name) for name in attributes):
                     return AccessDecision(False, "denied")
@@ -112,14 +132,15 @@ async def async_check_access(
                     eid.partition(".")[0] not in CONTROL_DOMAINS
                     or state is None
                     or "entity_id" in state.attributes
-                    or any(permissions.attribute_hidden(eid, name)
-                           for name in ("entity_id", "state"))
+                    or any(
+                        permissions.attribute_hidden(eid, name)
+                        for name in ("entity_id", "state")
+                    )
                 ):
                     return AccessDecision(False, "indirect_or_unsupported")
-                if (
-                    not permissions.check_entity(eid, POLICY_CONTROL)
-                    or not user.permissions.check_entity(eid, POLICY_CONTROL)
-                ):
+                if not permissions.check_entity(
+                    eid, POLICY_CONTROL
+                ) or not user.permissions.check_entity(eid, POLICY_CONTROL):
                     return AccessDecision(False, "denied")
     except Exception:  # noqa: BLE001 -- failure must never become permission
         return AccessDecision(False, "policy_unavailable")
@@ -155,13 +176,24 @@ async def async_project_context(
 
     unavailable = {"available": False, "entities": []}
     if (
-        not isinstance(user_id, str) or not user_id
-        or not isinstance(entity_ids, tuple) or not 0 < len(entity_ids) <= MAX_TARGETS
-        or any(not isinstance(eid, str) or not ENTITY_ID.fullmatch(eid) for eid in entity_ids)
-        or not isinstance(attributes, tuple) or len(attributes) > 16
-        or any(not isinstance(name, str) or not name or len(name) > 64 for name in attributes)
-        or (ceiling_user_id is not None
-            and (not isinstance(ceiling_user_id, str) or not ceiling_user_id))
+        not isinstance(user_id, str)
+        or not user_id
+        or not isinstance(entity_ids, tuple)
+        or not 0 < len(entity_ids) <= MAX_TARGETS
+        or any(
+            not isinstance(eid, str) or not ENTITY_ID.fullmatch(eid)
+            for eid in entity_ids
+        )
+        or not isinstance(attributes, tuple)
+        or len(attributes) > 16
+        or any(
+            not isinstance(name, str) or not name or len(name) > 64
+            for name in attributes
+        )
+        or (
+            ceiling_user_id is not None
+            and (not isinstance(ceiling_user_id, str) or not ceiling_user_id)
+        )
     ):
         return unavailable
     rbac = hass.data.get(DATA_RBAC)
@@ -174,8 +206,13 @@ async def async_project_context(
             return unavailable
         policies = []
         for uid, user in zip(identities, users, strict=True):
-            if (user is None or not user.is_active or user.system_generated or user.is_owner
-                    or not rbac.store.bindings.get(uid)):
+            if (
+                user is None
+                or not user.is_active
+                or user.system_generated
+                or user.is_owner
+                or not rbac.store.bindings.get(uid)
+            ):
                 return unavailable
             permission = rbac.evaluator.async_permissions(user)
             if permission.full_access:
@@ -184,33 +221,44 @@ async def async_project_context(
 
         entities = []
         for eid in dict.fromkeys(entity_ids):
-            if (not async_should_expose(hass, "conversation", eid)
-                    or not all(native.check_entity(eid, POLICY_READ)
-                               and role.check_entity(eid, POLICY_READ)
-                               for native, role in policies)):
+            if not async_should_expose(hass, "conversation", eid) or not all(
+                native.check_entity(eid, POLICY_READ)
+                and role.check_entity(eid, POLICY_READ)
+                for native, role in policies
+            ):
                 continue
             # A hidden identifier or state must not leak through another field.
-            if any(role.attribute_hidden(eid, key) for _, role in policies
-                   for key in ("entity_id", "state")):
+            if any(
+                role.attribute_hidden(eid, key)
+                for _, role in policies
+                for key in ("entity_id", "state")
+            ):
                 continue
             state = hass.states.get(eid)
             if state is None or not _context_value(state.state):
                 continue
             row = {"entity_id": eid, "state": state.state, "attributes": {}}
-            if (not any(role.attribute_hidden(eid, "friendly_name") for _, role in policies)
-                    and _context_value(state.name)):
+            if not any(
+                role.attribute_hidden(eid, "friendly_name") for _, role in policies
+            ) and _context_value(state.name):
                 row["name"] = state.name
             for key in dict.fromkeys(attributes):
                 # Identity/reference/credentials metadata is never context data.
                 domain = eid.partition(".")[0]
-                if key not in CONTEXT_ATTRIBUTES.get(domain, frozenset()) | {"assumed_state"}:
+                if key not in CONTEXT_ATTRIBUTES.get(domain, frozenset()) | {
+                    "assumed_state"
+                }:
                     continue
                 if any(role.attribute_hidden(eid, key) for _, role in policies):
                     continue
                 value = state.attributes.get(key)
-                typed = (isinstance(value, bool) if key == "assumed_state" else
-                         isinstance(value, str) if key in {"temperature_unit", "unit_of_measurement"}
-                         else isinstance(value, (int, float)) and not isinstance(value, bool))
+                typed = (
+                    isinstance(value, bool)
+                    if key == "assumed_state"
+                    else isinstance(value, str)
+                    if key in {"temperature_unit", "unit_of_measurement"}
+                    else isinstance(value, (int, float)) and not isinstance(value, bool)
+                )
                 if key in state.attributes and typed and _context_value(value):
                     row["attributes"][key] = value
             entities.append(row)
@@ -224,8 +272,15 @@ async def async_project_context(
 CONTEXT_ATTRIBUTES = {
     "light": frozenset({"brightness"}),
     "fan": frozenset({"percentage"}),
-    "climate": frozenset({"current_temperature", "temperature", "temperature_unit",
-                          "humidity", "current_humidity"}),
+    "climate": frozenset(
+        {
+            "current_temperature",
+            "temperature",
+            "temperature_unit",
+            "humidity",
+            "current_humidity",
+        }
+    ),
     "humidifier": frozenset({"humidity", "current_humidity"}),
     "cover": frozenset({"current_position"}),
     "sensor": frozenset({"unit_of_measurement", "battery_level"}),
@@ -434,7 +489,11 @@ async def async_guest_role_choices(hass: HomeAssistant) -> dict:
             ):
                 continue
             name = role.get("name", role_id)
-            if not isinstance(name, str) or not 0 < len(name) <= 128 or not name.isprintable():
+            if (
+                not isinstance(name, str)
+                or not 0 < len(name) <= 128
+                or not name.isprintable()
+            ):
                 name = role_id
             rows.append({"id": role_id, "name": name})
         return {"available": True, "roles": sorted(rows, key=lambda row: row["id"])}
@@ -443,8 +502,11 @@ async def async_guest_role_choices(hass: HomeAssistant) -> dict:
 
 
 async def async_check_guest_action(
-    hass: HomeAssistant, entity_ids: tuple[str, ...], *,
-    guest_role_id: str, operation: str = "read",
+    hass: HomeAssistant,
+    entity_ids: tuple[str, ...],
+    *,
+    guest_role_id: str,
+    operation: str = "read",
 ) -> AccessDecision:
     """Check a guest role without resolving or borrowing an HA user."""
     return await async_check_voice_action(
@@ -453,8 +515,11 @@ async def async_check_guest_action(
 
 
 async def async_check_voice_action(
-    hass: HomeAssistant, entity_ids: tuple[str, ...], *,
-    guest_role_id: str | None = None, user_id: str | None = None,
+    hass: HomeAssistant,
+    entity_ids: tuple[str, ...],
+    *,
+    guest_role_id: str | None = None,
+    user_id: str | None = None,
     operation: str = "read",
 ) -> AccessDecision:
     """Check current role-domain/entity rules for a fixed guest capability.
@@ -492,11 +557,15 @@ async def async_check_voice_action(
                 or entry.platform in {"group", "template"}
                 or "entity_id" in state.attributes
                 or not _satellite_readable(hass, native, role, eid)
-                or (domain == "media_player" and (
-                    entry.platform != "music_assistant"
-                    or state.attributes.get("mass_player_type", "player") != "player"
-                    or state.attributes.get("group_members", []) not in ([], [eid])
-                ))
+                or (
+                    domain == "media_player"
+                    and (
+                        entry.platform != "music_assistant"
+                        or state.attributes.get("mass_player_type", "player")
+                        != "player"
+                        or state.attributes.get("group_members", []) not in ([], [eid])
+                    )
+                )
             ):
                 return AccessDecision(False, "denied")
             if operation == "read":
@@ -506,9 +575,10 @@ async def async_check_voice_action(
                 or not role.check_entity(eid, POLICY_CONTROL)
                 or (native is not None and not native.check_entity(eid, POLICY_CONTROL))
                 or not role.tier_allowed(f"{domain}.{operation}", TIER_OPEN)
-                or (operation == "play_media" and not role.tier_allowed(
-                    "music_assistant.play_media", TIER_OPEN
-                ))
+                or (
+                    operation == "play_media"
+                    and not role.tier_allowed("music_assistant.play_media", TIER_OPEN)
+                )
             ):
                 return AccessDecision(False, "denied")
     except Exception:  # noqa: BLE001 -- provider/role failure never grants authority
@@ -517,31 +587,50 @@ async def async_check_voice_action(
 
 
 async def async_project_guest_context(
-    hass: HomeAssistant, entity_ids: tuple[str, ...], *, guest_role_id: str,
+    hass: HomeAssistant,
+    entity_ids: tuple[str, ...],
+    *,
+    guest_role_id: str,
 ) -> dict:
     """Project names/states under the selected guest role only."""
-    return await async_project_voice_context(hass, entity_ids, guest_role_id=guest_role_id)
+    return await async_project_voice_context(
+        hass, entity_ids, guest_role_id=guest_role_id
+    )
 
 
 async def async_project_voice_context(
-    hass: HomeAssistant, entity_ids: tuple[str, ...], *,
-    guest_role_id: str | None = None, user_id: str | None = None,
+    hass: HomeAssistant,
+    entity_ids: tuple[str, ...],
+    *,
+    guest_role_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Bounded, filtered names/states only; no role rules or private attributes."""
     unavailable = {"available": False, "entities": []}
     if not _satellite_request_valid(entity_ids, (), "read"):
         return unavailable
     try:
-        permitted = tuple([
-            eid for eid in entity_ids
-            if (await async_check_voice_action(
-                hass, (eid,), guest_role_id=guest_role_id, user_id=user_id,
-            )).allowed
-        ])
+        permitted = tuple(
+            [
+                eid
+                for eid in entity_ids
+                if (
+                    await async_check_voice_action(
+                        hass,
+                        (eid,),
+                        guest_role_id=guest_role_id,
+                        user_id=user_id,
+                    )
+                ).allowed
+            ]
+        )
         if not permitted:
             return {"available": True, "entities": []}
         return await async_project_satellite_context(
-            hass, permitted, guest_role_id=guest_role_id, user_id=user_id,
+            hass,
+            permitted,
+            guest_role_id=guest_role_id,
+            user_id=user_id,
         )
     except Exception:  # noqa: BLE001 -- never return a partial projection on errors
         return unavailable
@@ -582,8 +671,11 @@ async def async_project_voice_capabilities(hass, entity_ids, **kwargs):
 
 
 async def async_project_voice_references(
-    hass: HomeAssistant, entity_ids: tuple[str, ...], *,
-    guest_role_id: str | None = None, user_id: str | None = None,
+    hass: HomeAssistant,
+    entity_ids: tuple[str, ...],
+    *,
+    guest_role_id: str | None = None,
+    user_id: str | None = None,
 ) -> dict:
     """Return permitted conversational references, never group execution authority."""
     from homeassistant.helpers import area_registry as ar  # noqa: PLC0415
@@ -592,10 +684,14 @@ async def async_project_voice_references(
 
     unavailable = {"available": False, "references": []}
     if (
-        type(entity_ids) is not tuple or not 0 < len(entity_ids) <= 1024
-        or any(type(eid) is not str or not ENTITY_ID.fullmatch(eid)
-               or eid.partition(".")[0] not in set(GUEST_ACTIONS) | {"climate", "cover"}
-               for eid in entity_ids)
+        type(entity_ids) is not tuple
+        or not 0 < len(entity_ids) <= 1024
+        or any(
+            type(eid) is not str
+            or not ENTITY_ID.fullmatch(eid)
+            or eid.partition(".")[0] not in set(GUEST_ACTIONS) | {"climate", "cover"}
+            for eid in entity_ids
+        )
         or len(set(entity_ids)) != len(entity_ids)
     ):
         return unavailable
@@ -607,7 +703,11 @@ async def async_project_voice_references(
         if resolved is None or hass.data.get(DATA_RBAC) is not rbac:
             return unavailable
         native, role = resolved
-        entities, devices, areas = er.async_get(hass), dr.async_get(hass), ar.async_get(hass)
+        entities, devices, areas = (
+            er.async_get(hass),
+            dr.async_get(hass),
+            ar.async_get(hass),
+        )
 
         def text(value):
             return type(value) is str and 0 < len(value) <= 128 and value.isprintable()
@@ -615,20 +715,36 @@ async def async_project_voice_references(
         def reference(eid):
             state, entry = hass.states.get(eid), entities.async_get(eid)
             if (
-                state is None or state.state in {"unknown", "unavailable"}
-                or entry is None or entry.disabled_by is not None
+                state is None
+                or state.state in {"unknown", "unavailable"}
+                or entry is None
+                or entry.disabled_by is not None
                 or not _satellite_readable(hass, native, role, eid)
-                or role.attribute_hidden(eid, "friendly_name") or not text(state.name)
+                or role.attribute_hidden(eid, "friendly_name")
+                or not text(state.name)
             ):
                 return None
             row = {"entity_id": eid, "name": state.name}
             if not role.attribute_hidden(eid, "aliases"):
-                row["aliases"] = sorted(alias for alias in entry.aliases if text(alias))[:8]
+                row["aliases"] = sorted(
+                    alias for alias in entry.aliases if text(alias)
+                )[:8]
             device = devices.async_get(entry.device_id) if entry.device_id else None
-            area = areas.async_get_area(entry.area_id or (device.area_id if device else None))
-            if area and not any(role.attribute_hidden(eid, key) for key in (
-                "area", "area_id", "area_name",
-            )) and text(area.name):
+            area = areas.async_get_area(
+                entry.area_id or (device.area_id if device else None)
+            )
+            if (
+                area
+                and not any(
+                    role.attribute_hidden(eid, key)
+                    for key in (
+                        "area",
+                        "area_id",
+                        "area_name",
+                    )
+                )
+                and text(area.name)
+            ):
                 row["area"] = area.name
                 if not role.attribute_hidden(eid, "area_aliases"):
                     row["area_aliases"] = sorted(
@@ -639,10 +755,17 @@ async def async_project_voice_references(
         visible = {}
         for eid in entity_ids:
             state, entry = hass.states.get(eid), entities.async_get(eid)
-            if (state is None or entry is None or entry.platform in {"group", "template"}
-                    or "entity_id" in state.attributes
-                    or (state.domain == "cover" and state.attributes.get("device_class")
-                        not in {"blind", "shade", "curtain", "shutter", "awning"})):
+            if (
+                state is None
+                or entry is None
+                or entry.platform in {"group", "template"}
+                or "entity_id" in state.attributes
+                or (
+                    state.domain == "cover"
+                    and state.attributes.get("device_class")
+                    not in {"blind", "shade", "curtain", "shutter", "awning"}
+                )
+            ):
                 continue
             if row := reference(eid):
                 visible[eid] = row
@@ -655,11 +778,17 @@ async def async_project_voice_references(
             entry = entities.async_get(state.entity_id)
             if (
                 state.domain not in {"light", "switch", "fan", "group"}
-                or entry is None or entry.platform != "group"
-                or type(members) is not list or not 0 < len(members) <= 32
-                or any(type(eid) is not str or eid not in visible
-                       or eid.partition(".")[0] not in {"light", "switch", "fan"}
-                       or "entity_id" in hass.states.get(eid).attributes for eid in members)
+                or entry is None
+                or entry.platform != "group"
+                or type(members) is not list
+                or not 0 < len(members) <= 32
+                or any(
+                    type(eid) is not str
+                    or eid not in visible
+                    or eid.partition(".")[0] not in {"light", "switch", "fan"}
+                    or "entity_id" in hass.states.get(eid).attributes
+                    for eid in members
+                )
                 or len(set(members)) != len(members)
             ):
                 continue

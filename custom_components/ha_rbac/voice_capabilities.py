@@ -34,21 +34,48 @@ MEDIA = {
     "source": ("select_source", MediaPlayerEntityFeature.SELECT_SOURCE),
 }
 ATTRIBUTES = {
-    "light": {"brightness", "color_mode", "supported_color_modes", "rgb_color",
-              "color_temp_kelvin", "min_color_temp_kelvin", "max_color_temp_kelvin"},
+    "light": {
+        "brightness",
+        "color_mode",
+        "supported_color_modes",
+        "rgb_color",
+        "color_temp_kelvin",
+        "min_color_temp_kelvin",
+        "max_color_temp_kelvin",
+    },
     "switch": set(),
     "fan": {"percentage", "oscillating", "direction"},
-    "climate": {"temperature", "current_temperature", "min_temp", "max_temp",
-                "temperature_unit", "hvac_modes", "preset_modes", "preset_mode"},
+    "climate": {
+        "temperature",
+        "current_temperature",
+        "min_temp",
+        "max_temp",
+        "temperature_unit",
+        "hvac_modes",
+        "preset_modes",
+        "preset_mode",
+    },
     "cover": {"device_class", "current_position"},
-    "media_player": {"volume_level", "is_volume_muted", "media_position", "media_duration",
-                     "media_title", "media_artist", "shuffle", "repeat", "source", "source_list"},
+    "media_player": {
+        "volume_level",
+        "is_volume_muted",
+        "media_position",
+        "media_duration",
+        "media_title",
+        "media_artist",
+        "shuffle",
+        "repeat",
+        "source",
+        "source_list",
+    },
 }
 
 
 def _number(value, minimum, maximum):
     return (
-        type(value) in {int, float} and math.isfinite(value) and minimum <= value <= maximum
+        type(value) in {int, float}
+        and math.isfinite(value)
+        and minimum <= value <= maximum
     )
 
 
@@ -75,16 +102,22 @@ def _light_plan(attrs, args):
     if "rgb" in args:
         rgb = args["rgb"]
         if (
-            not isinstance(rgb, (list, tuple)) or len(rgb) != 3
+            not isinstance(rgb, (list, tuple))
+            or len(rgb) != 3
             or any(type(item) is not int or not 0 <= item <= 255 for item in rgb)
             or not set(modes) & {"rgb", "rgbw", "rgbww", "hs", "xy"}
         ):
             return None
         data["rgb_color"] = list(rgb)
     if "kelvin" in args:
-        if "rgb" in args or "color_temp" not in modes or not _number(
-            args["kelvin"], attrs.get("min_color_temp_kelvin", 1000),
-            attrs.get("max_color_temp_kelvin", 20000),
+        if (
+            "rgb" in args
+            or "color_temp" not in modes
+            or not _number(
+                args["kelvin"],
+                attrs.get("min_color_temp_kelvin", 1000),
+                attrs.get("max_color_temp_kelvin", 20000),
+            )
         ):
             return None
         data["color_temp_kelvin"] = args["kelvin"]
@@ -105,15 +138,21 @@ def prepare(state, action, args):
         if features & FanEntityFeature.SET_SPEED and _number(args.get("level"), 0, 100):
             return "set_percentage", {"percentage": args["level"]}
     if domain == "climate":
-        if action == "set_temperature" and features & ClimateEntityFeature.TARGET_TEMPERATURE:
+        if (
+            action == "set_temperature"
+            and features & ClimateEntityFeature.TARGET_TEMPERATURE
+        ):
             low, high = attrs.get("min_temp"), attrs.get("max_temp")
             if _number(low, -100, 1000) and _number(high, low, 1000):
                 if _number(args.get("temperature"), low, high):
                     return "set_temperature", {"temperature": args["temperature"]}
-        if action == "set_hvac_mode" and args.get("mode") in attrs.get("hvac_modes", []):
+        if action == "set_hvac_mode" and args.get("mode") in attrs.get(
+            "hvac_modes", []
+        ):
             return "set_hvac_mode", {"hvac_mode": args["mode"]}
         if (
-            action == "set_preset" and features & ClimateEntityFeature.PRESET_MODE
+            action == "set_preset"
+            and features & ClimateEntityFeature.PRESET_MODE
             and args.get("mode") in attrs.get("preset_modes", [])
         ):
             return "set_preset_mode", {"preset_mode": args["mode"]}
@@ -126,35 +165,62 @@ def prepare(state, action, args):
         if action in simple and features & simple[action][1]:
             return simple[action][0], {}
         if (
-            action == "set_blind_position" and features & CoverEntityFeature.SET_POSITION
+            action == "set_blind_position"
+            and features & CoverEntityFeature.SET_POSITION
             and _number(args.get("level"), 0, 100)
         ):
             return "set_cover_position", {"position": args["level"]}
     if domain == "media_player" and action in MEDIA and features & MEDIA[action][1]:
         service, _feature = MEDIA[action]
         if action == "volume":
-            return (service, {"volume_level": args["level"] / 100}) if _number(
-                args.get("level"), 0, 100,
-            ) else None
+            return (
+                (service, {"volume_level": args["level"] / 100})
+                if _number(
+                    args.get("level"),
+                    0,
+                    100,
+                )
+                else None
+            )
         if action in {"mute", "unmute"}:
             return service, {"is_volume_muted": action == "mute"}
         if action == "seek":
             duration = attrs.get("media_duration")
-            if _number(duration, 0, 86400) and _number(args.get("position"), 0, duration):
+            if _number(duration, 0, 86400) and _number(
+                args.get("position"), 0, duration
+            ):
                 return service, {"seek_position": args["position"]}
             return None
         if action == "shuffle":
-            return (service, {"shuffle": args["enabled"]}) if type(
-                args.get("enabled"),
-            ) is bool else None
+            return (
+                (service, {"shuffle": args["enabled"]})
+                if type(
+                    args.get("enabled"),
+                )
+                is bool
+                else None
+            )
         if action == "repeat":
-            return (service, {"repeat": args["mode"]}) if args.get("mode") in {
-                "off", "one", "all",
-            } else None
+            return (
+                (service, {"repeat": args["mode"]})
+                if args.get("mode")
+                in {
+                    "off",
+                    "one",
+                    "all",
+                }
+                else None
+            )
         if action == "source":
-            return (service, {"source": args["mode"]}) if args.get("mode") in attrs.get(
-                "source_list", [],
-            ) else None
+            return (
+                (service, {"source": args["mode"]})
+                if args.get("mode")
+                in attrs.get(
+                    "source_list",
+                    [],
+                )
+                else None
+            )
         return service, {}
     return None
 
@@ -168,30 +234,57 @@ def supported_actions(state, native, role):
         return values[0] if isinstance(values, (list, tuple)) and values else None
 
     candidates = {
-        **{name: {} for name in (
-            "turn_on", "turn_off", "open_blind", "close_blind", "stop_blind",
-            "stop", "pause", "resume", "next", "previous", "volume_up", "volume_down",
-            "mute", "unmute", "power_on", "power_off",
-        )},
-        "set_light": {"level": 50}, "set_fan_speed": {"level": 50},
+        **{
+            name: {}
+            for name in (
+                "turn_on",
+                "turn_off",
+                "open_blind",
+                "close_blind",
+                "stop_blind",
+                "stop",
+                "pause",
+                "resume",
+                "next",
+                "previous",
+                "volume_up",
+                "volume_down",
+                "mute",
+                "unmute",
+                "power_on",
+                "power_off",
+            )
+        },
+        "set_light": {"level": 50},
+        "set_fan_speed": {"level": 50},
         "set_temperature": {"temperature": attrs.get("min_temp")},
         "set_hvac_mode": {"mode": first("hvac_modes")},
-        "set_preset": {"mode": first("preset_modes")}, "set_blind_position": {"level": 50},
-        "volume": {"level": 50}, "seek": {"position": 0}, "shuffle": {"enabled": True},
-        "repeat": {"mode": "off"}, "source": {"mode": first("source_list")},
+        "set_preset": {"mode": first("preset_modes")},
+        "set_blind_position": {"level": 50},
+        "volume": {"level": 50},
+        "seek": {"position": 0},
+        "shuffle": {"enabled": True},
+        "repeat": {"mode": "off"},
+        "source": {"mode": first("source_list")},
     }
     result = []
-    if (not role.check_entity(state.entity_id, POLICY_CONTROL)
-            or (native is not None and not native.check_entity(state.entity_id, POLICY_CONTROL))):
+    if not role.check_entity(state.entity_id, POLICY_CONTROL) or (
+        native is not None and not native.check_entity(state.entity_id, POLICY_CONTROL)
+    ):
         return result
     for action, args in candidates.items():
         try:
             plan = prepare(state, action, args)
             if (
-                plan and role.tier_allowed(f"{state.domain}.{plan[0]}", TIER_OPEN)
-                and not any(role.attribute_hidden(state.entity_id, key) for key in plan[1])
-                and not ("brightness_pct" in plan[1]
-                         and role.attribute_hidden(state.entity_id, "brightness"))
+                plan
+                and role.tier_allowed(f"{state.domain}.{plan[0]}", TIER_OPEN)
+                and not any(
+                    role.attribute_hidden(state.entity_id, key) for key in plan[1]
+                )
+                and not (
+                    "brightness_pct" in plan[1]
+                    and role.attribute_hidden(state.entity_id, "brightness")
+                )
             ):
                 result.append(action)
         except (TypeError, ValueError, KeyError):
@@ -199,18 +292,26 @@ def supported_actions(state, native, role):
     return result
 
 
-async def check(hass, ids, *, user_id=None, guest_role_id=None, action="read", args=None):
+async def check(
+    hass, ids, *, user_id=None, guest_role_id=None, action="read", args=None
+):
     """Check exact current capabilities and role/native permission before each effect."""
     if (
-        type(ids) is not tuple or not 0 < len(ids) <= 32
+        type(ids) is not tuple
+        or not 0 < len(ids) <= 32
         or any(type(eid) is not str or len(eid) > 255 for eid in ids)
-        or len(set(ids)) != len(ids) or type(action) is not str
+        or len(set(ids)) != len(ids)
+        or type(action) is not str
         or (args is not None and type(args) is not dict)
     ):
         return AccessDecision(False, "invalid_request")
     rbac = hass.data.get(DATA_RBAC)
     try:
-        resolved = await _satellite_permissions(hass, rbac, user_id, guest_role_id) if rbac else None
+        resolved = (
+            await _satellite_permissions(hass, rbac, user_id, guest_role_id)
+            if rbac
+            else None
+        )
         if resolved is None or hass.data.get(DATA_RBAC) is not rbac:
             return AccessDecision(False, "invalid_subject")
         native, role = resolved
@@ -218,29 +319,44 @@ async def check(hass, ids, *, user_id=None, guest_role_id=None, action="read", a
         for eid in ids:
             state, entry = hass.states.get(eid), registry.async_get(eid)
             if (
-                state is None or state.domain not in DOMAINS
-                or state.state in {"unavailable", "unknown"} or entry is None
-                or entry.disabled_by is not None or entry.platform in {"group", "template"}
+                state is None
+                or state.domain not in DOMAINS
+                or state.state in {"unavailable", "unknown"}
+                or entry is None
+                or entry.disabled_by is not None
+                or entry.platform in {"group", "template"}
                 or "entity_id" in state.attributes
                 or not _satellite_readable(hass, native, role, eid)
-                or (state.domain == "cover" and (
-                    state.attributes.get("device_class") not in BLINDS
-                    or role.attribute_hidden(eid, "device_class")
-                ))
-                or (state.domain == "media_player"
-                    and (state.attributes.get("group_members", []) not in ([], [eid])
-                         or state.attributes.get("mass_player_type", "player") != "player"))
+                or (
+                    state.domain == "cover"
+                    and (
+                        state.attributes.get("device_class") not in BLINDS
+                        or role.attribute_hidden(eid, "device_class")
+                    )
+                )
+                or (
+                    state.domain == "media_player"
+                    and (
+                        state.attributes.get("group_members", []) not in ([], [eid])
+                        or state.attributes.get("mass_player_type", "player")
+                        != "player"
+                    )
+                )
             ):
                 return AccessDecision(False, "denied")
             if action == "read":
                 continue
             plan = prepare(state, action, args or {})
             if (
-                plan is None or not role.check_entity(eid, POLICY_CONTROL)
+                plan is None
+                or not role.check_entity(eid, POLICY_CONTROL)
                 or (native is not None and not native.check_entity(eid, POLICY_CONTROL))
                 or not role.tier_allowed(f"{state.domain}.{plan[0]}", TIER_OPEN)
                 or any(role.attribute_hidden(eid, key) for key in plan[1])
-                or ("brightness_pct" in plan[1] and role.attribute_hidden(eid, "brightness"))
+                or (
+                    "brightness_pct" in plan[1]
+                    and role.attribute_hidden(eid, "brightness")
+                )
             ):
                 return AccessDecision(False, "denied")
     except Exception:  # noqa: BLE001 -- unknown capability or policy fails closed
@@ -255,9 +371,14 @@ async def project(hass, ids, *, user_id=None, guest_role_id=None):
         return {"available": False, "entities": []}
     try:
         for eid in ids:
-            if not (await check(
-                hass, (eid,), user_id=user_id, guest_role_id=guest_role_id,
-            )).allowed:
+            if not (
+                await check(
+                    hass,
+                    (eid,),
+                    user_id=user_id,
+                    guest_role_id=guest_role_id,
+                )
+            ).allowed:
                 continue
             rbac = hass.data.get(DATA_RBAC)
             resolved = await _satellite_permissions(hass, rbac, user_id, guest_role_id)
@@ -280,10 +401,13 @@ async def project(hass, ids, *, user_id=None, guest_role_id=None):
                     if value is not None:
                         row["attributes"][key] = value
             if not role.attribute_hidden(eid, "supported_actions"):
-                row["attributes"]["supported_actions"] = supported_actions(state, native, role)
+                row["attributes"]["supported_actions"] = supported_actions(
+                    state, native, role
+                )
             if not role.attribute_hidden(eid, "readable_fields"):
                 row["attributes"]["readable_fields"] = sorted(
-                    key for key in ATTRIBUTES[state.domain] | {"supported_actions"}
+                    key
+                    for key in ATTRIBUTES[state.domain] | {"supported_actions"}
                     if not role.attribute_hidden(eid, key)
                 )
             result.append(row)

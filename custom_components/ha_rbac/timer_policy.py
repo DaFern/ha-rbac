@@ -16,28 +16,49 @@ VERSION = 1
 ACTIONS = frozenset({"read", "cancel", "stop", "cancel_all"})
 CONTROL_ACTIONS = frozenset({"pause", "resume", "cancel", "add", "remove"})
 PRIVATE_FIELDS = (
-    "friendly_name", "aliases", "area_id", "area", "area_name", "area_aliases",
-    "timers", "name", "timer_names",
+    "friendly_name",
+    "aliases",
+    "area_id",
+    "area",
+    "area_name",
+    "area_aliases",
+    "timers",
+    "name",
+    "timer_names",
 )
 
 
-async def check(hass, satellite_ids, *, action="read", user_id=None, guest_role_id=None):
+async def check(
+    hass, satellite_ids, *, action="read", user_id=None, guest_role_id=None
+):
     """Keep the existing read/cancel voice contract unchanged."""
     return await _check(
-        hass, satellite_ids, action=action, user_id=user_id, guest_role_id=guest_role_id,
-        actions=ACTIONS, command="timer.cancel",
+        hass,
+        satellite_ids,
+        action=action,
+        user_id=user_id,
+        guest_role_id=guest_role_id,
+        actions=ACTIONS,
+        command="timer.cancel",
     )
 
 
 async def check_control(hass, satellite_ids, *, action, user_id):
     """Separate authenticated UI contract, with operation-specific tier denials."""
     return await _check(
-        hass, satellite_ids, action=action, user_id=user_id, guest_role_id=None,
-        actions=CONTROL_ACTIONS, command=f"timer.{action}" if type(action) is str else "",
+        hass,
+        satellite_ids,
+        action=action,
+        user_id=user_id,
+        guest_role_id=None,
+        actions=CONTROL_ACTIONS,
+        command=f"timer.{action}" if type(action) is str else "",
     )
 
 
-async def _check(hass, satellite_ids, *, action, user_id, guest_role_id, actions, command):
+async def _check(
+    hass, satellite_ids, *, action, user_id, guest_role_id, actions, command
+):
     """Require exact exposed ESPHome satellites and fresh native/RBAC permissions.
 
     An entity read grant is not a cancellation grant. No domain or service outside
@@ -45,15 +66,18 @@ async def _check(hass, satellite_ids, *, action, user_id, guest_role_id, actions
     Trusted callers must separately prove transport provenance and target identity.
     """
     if (
-        type(satellite_ids) is not tuple or not 0 < len(satellite_ids) <= 32
+        type(satellite_ids) is not tuple
+        or not 0 < len(satellite_ids) <= 32
         or any(
-            type(eid) is not str or len(eid) > 255
+            type(eid) is not str
+            or len(eid) > 255
             or not eid.startswith("assist_satellite.")
             or not ENTITY_ID.fullmatch(eid)
             for eid in satellite_ids
         )
         or len(set(satellite_ids)) != len(satellite_ids)
-        or type(action) is not str or action not in actions
+        or type(action) is not str
+        or action not in actions
     ):
         return AccessDecision(False, "invalid_request")
     rbac = hass.data.get(DATA_RBAC)
@@ -69,9 +93,12 @@ async def _check(hass, satellite_ids, *, action, user_id, guest_role_id, actions
             entry = registry.async_get(eid)
             state = hass.states.get(eid)
             if (
-                entry is None or entry.platform != "esphome"
-                or entry.disabled_by is not None or not entry.device_id
-                or state is None or state.state in {"unknown", "unavailable"}
+                entry is None
+                or entry.platform != "esphome"
+                or entry.disabled_by is not None
+                or not entry.device_id
+                or state is None
+                or state.state in {"unknown", "unavailable"}
                 or not async_device_supports_timers(hass, entry.device_id)
                 or not _satellite_readable(hass, native, role, eid)
                 or any(role.attribute_hidden(eid, key) for key in PRIVATE_FIELDS)

@@ -163,18 +163,27 @@ async def guest_tools_env(env):
     for eid in targets[1:]:
         domain = eid.partition(".")[0]
         entry = er.async_get(e.hass).async_get_or_create(
-            domain, "music_assistant" if domain == "media_player" else "test",
-            eid, suggested_object_id="guest",
+            domain,
+            "music_assistant" if domain == "media_player" else "test",
+            eid,
+            suggested_object_id="guest",
             **({"config_entry": music_entry} if domain == "media_player" else {}),
         )
-        e.hass.states.async_set(entry.entity_id, "off", {"friendly_name": "Guest device"})
+        e.hass.states.async_set(
+            entry.entity_id, "off", {"friendly_name": "Guest device"}
+        )
         async_expose_entity(e.hass, "conversation", entry.entity_id, True)
     e.store.roles["guest"] = {
-        "id": "guest", "name": "Guest",
-        "allow": {"entities": {"domains": {
-            domain: {"read": True, "control": True}
-            for domain in ("light", "switch", "fan", "media_player")
-        }}},
+        "id": "guest",
+        "name": "Guest",
+        "allow": {
+            "entities": {
+                "domains": {
+                    domain: {"read": True, "control": True}
+                    for domain in ("light", "switch", "fan", "media_player")
+                }
+            }
+        },
         "deny": {},
     }
     e.evaluator.invalidate()
@@ -184,7 +193,9 @@ async def guest_tools_env(env):
         e.calls.append((call.domain, call.service, dict(call.data), call.context))
 
     for domain, service in (
-        ("switch", "turn_on"), ("fan", "turn_on"), ("media_player", "media_play"),
+        ("switch", "turn_on"),
+        ("fan", "turn_on"),
+        ("media_player", "media_play"),
         ("music_assistant", "play_media"),
     ):
         e.hass.services.async_register(domain, service, record)
@@ -205,35 +216,58 @@ async def test_guest_tools_real_domain_policy_native_admission_and_no_replay(
     async def handle(payload, original):
         held.extend(payload["tools"])
         assert original is context
-        tool = next(tool for tool in held if tool.name.endswith(
-            "guest_music" if domain == "media_player" else "guest_on_off"
-        ))
+        tool = next(
+            tool
+            for tool in held
+            if tool.name.endswith(
+                "guest_music" if domain == "media_player" else "guest_on_off"
+            )
+        )
         args = (
             {"action": "resume", "speaker": "media_player.guest"}
             if domain == "media_player"
             else {"operation": "turn_on", "entity_ids": [f"{domain}.guest"]}
         )
         result = await tool.async_call(
-            e.hass, llm.ToolInput(tool_name=tool.name, tool_args=args),
-            llm.LLMContext(platform="codex_assist", context=original, language="en",
-                           assistant="conversation", device_id=None),
+            e.hass,
+            llm.ToolInput(tool_name=tool.name, tool_args=args),
+            llm.LLMContext(
+                platform="codex_assist",
+                context=original,
+                language="en",
+                assistant="conversation",
+                device_id=None,
+            ),
         )
         assert not result.error
         return {"status": "completed", "completed": 1}
 
-    result = await e.ingress.async_guest_turn(admission, transcript=text, handler=handle)
+    result = await e.ingress.async_guest_turn(
+        admission, transcript=text, handler=handle
+    )
     assert result == {"status": "completed", "completed": 1}
     assert len(e.calls) == 1
     assert e.calls[0][3] is context
     assert context.user_id == "original-kiosk"
-    assert await e.ingress.async_guest_turn(admission, transcript=text, handler=handle) == DENIED
+    assert (
+        await e.ingress.async_guest_turn(admission, transcript=text, handler=handle)
+        == DENIED
+    )
     # Tools retained by a server handler lose authority as soon as the scope closes.
     tool = held[0]
-    assert (await tool.async_call(
-        e.hass, llm.ToolInput(tool_name=tool.name, tool_args={}),
-        llm.LLMContext(platform="codex_assist", context=context, language="en",
-                       assistant="conversation", device_id=None),
-    )).error
+    assert (
+        await tool.async_call(
+            e.hass,
+            llm.ToolInput(tool_name=tool.name, tool_args={}),
+            llm.LLMContext(
+                platform="codex_assist",
+                context=context,
+                language="en",
+                assistant="conversation",
+                device_id=None,
+            ),
+        )
+    ).error
     assert len(e.calls) == 1
 
 
@@ -257,20 +291,33 @@ async def test_guest_tools_recheck_changes_after_model_prompt(guest_tools_env, c
             context.user_id = "forged-owner"
         else:
             e.state.key = Fernet.generate_key().decode()
-        tool = next(tool for tool in payload["tools"] if tool.name.endswith("guest_on_off"))
+        tool = next(
+            tool for tool in payload["tools"] if tool.name.endswith("guest_on_off")
+        )
         result = await tool.async_call(
-            e.hass, llm.ToolInput(tool_name=tool.name, tool_args={
-                "operation": "turn_on", "entity_ids": ["switch.guest"],
-            }),
-            llm.LLMContext(platform="codex_assist", context=original, language="en",
-                           assistant="conversation", device_id=None),
+            e.hass,
+            llm.ToolInput(
+                tool_name=tool.name,
+                tool_args={
+                    "operation": "turn_on",
+                    "entity_ids": ["switch.guest"],
+                },
+            ),
+            llm.LLMContext(
+                platform="codex_assist",
+                context=original,
+                language="en",
+                assistant="conversation",
+                device_id=None,
+            ),
         )
         assert result.error
         return DENIED
 
-    assert await e.ingress.async_guest_turn(
-        admission, transcript=text, handler=handle
-    ) == DENIED
+    assert (
+        await e.ingress.async_guest_turn(admission, transcript=text, handler=handle)
+        == DENIED
+    )
     assert e.calls == []
 
 
@@ -287,16 +334,20 @@ async def test_guest_tools_require_private_neutral_handoff(guest_tools_env, kind
         text, _wire = transcript(e, speaker="child")
     else:
         wire = e.packets.encode(
-            e.state.key, "Turn on the plug", voice="unbound", revision="a" * 32,
+            e.state.key,
+            "Turn on the plug",
+            voice="unbound",
+            revision="a" * 32,
         )
         text = e.runtime.handoffs.issue(e.state.key, wire)
 
     async def forbidden(*args):
         pytest.fail("Invalid guest authority reached a server handler")
 
-    assert await e.ingress.async_guest_turn(
-        admission, transcript=text, handler=forbidden
-    ) == DENIED
+    assert (
+        await e.ingress.async_guest_turn(admission, transcript=text, handler=forbidden)
+        == DENIED
+    )
     assert e.calls == []
 
 
@@ -323,11 +374,19 @@ async def test_guest_handler_disconnect_cancels_and_revokes_held_tools(guest_too
     with pytest.raises(asyncio.CancelledError):
         await task
     tool = held[0]
-    assert (await tool.async_call(
-        e.hass, llm.ToolInput(tool_name=tool.name, tool_args={}),
-        llm.LLMContext(platform="codex_assist", context=context, language="en",
-                       assistant="conversation", device_id=None),
-    )).error
+    assert (
+        await tool.async_call(
+            e.hass,
+            llm.ToolInput(tool_name=tool.name, tool_args={}),
+            llm.LLMContext(
+                platform="codex_assist",
+                context=context,
+                language="en",
+                assistant="conversation",
+                device_id=None,
+            ),
+        )
+    ).error
     assert not e.dispatcher._scopes
     assert e.calls == []
 
@@ -351,11 +410,20 @@ def transcript(env, speaker="child"):
 
 @pytest.mark.parametrize(
     ("speaker", "target", "allowed"),
-    [(None, IDS[0], True), ("child", IDS[1], True), ("child", IDS[2], False),
-     ("adult", IDS[2], True), ("owner", IDS[3], True), ("unbound", IDS[3], False)],
+    [
+        (None, IDS[0], True),
+        ("child", IDS[1], True),
+        ("child", IDS[2], False),
+        ("adult", IDS[2], True),
+        ("owner", IDS[3], True),
+        ("unbound", IDS[3], False),
+    ],
 )
 async def test_voice_tool_turn_uses_own_role_not_guest_or_original_caller(
-    guest_tools_env, speaker, target, allowed,
+    guest_tools_env,
+    speaker,
+    target,
+    allowed,
 ):
     """Recognised voice actions check the speaker, never the transport caller."""
     e = guest_tools_env
@@ -371,13 +439,21 @@ async def test_voice_tool_turn_uses_own_role_not_guest_or_original_caller(
         assert original is context
         tool = next(t for t in payload["tools"] if t.name.endswith("guest_on_off"))
         result = await tool.async_call(
-            e.hass, llm.ToolInput(tool_name=tool.name, tool_args=command(target)),
-            llm.LLMContext(platform="codex_assist", context=original,
-                           language="en", assistant="conversation", device_id=None),
+            e.hass,
+            llm.ToolInput(tool_name=tool.name, tool_args=command(target)),
+            llm.LLMContext(
+                platform="codex_assist",
+                context=original,
+                language="en",
+                assistant="conversation",
+                device_id=None,
+            ),
         )
         seen.append(result)
-        return {"status": "denied" if result.error else "completed",
-                "completed": 0 if result.error else 1}
+        return {
+            "status": "denied" if result.error else "completed",
+            "completed": 0 if result.error else 1,
+        }
 
     result = await e.ingress.async_voice_turn(lease, transcript=text, handler=handle)
     assert (result["status"] == "completed") is allowed
@@ -398,17 +474,26 @@ def reference_catalogue(env):
     group_entry = MockConfigEntry(domain="group")
     group_entry.add_to_hass(e.hass)
     group = registry.async_get_or_create(
-        "light", "group", "reading-group", config_entry=group_entry,
+        "light",
+        "group",
+        "reading-group",
+        config_entry=group_entry,
         suggested_object_id="reading_room",
     )
-    e.hass.states.async_set(group.entity_id, "on", {
-        "friendly_name": "Reading room lights", "entity_id": list(IDS[:2]),
-    })
+    e.hass.states.async_set(
+        group.entity_id,
+        "on",
+        {
+            "friendly_name": "Reading room lights",
+            "entity_id": list(IDS[:2]),
+        },
+    )
     async_expose_entity(e.hass, "conversation", group.entity_id, True)
     store = e.hass.data[DATA_RBAC].store
     for name in ("guest", "child"):
         store.roles[name]["allow"]["entities"]["entity_ids"][group.entity_id] = {
-            "read": True, "control": True,
+            "read": True,
+            "control": True,
         }
     e.hass.data[DATA_RBAC].evaluator.invalidate()
     return SimpleNamespace(e=e, group=group, area=area)
@@ -420,7 +505,9 @@ async def test_reference_catalogue_uses_permitted_rooms_aliases_and_complete_gro
     """Descriptive groups do not turn into group-service execution grants."""
     r = reference_catalogue
     data = await assist_policy.async_project_voice_references(
-        r.e.hass, IDS, user_id="child",
+        r.e.hass,
+        IDS,
+        user_id="child",
     )
     assert data["available"]
     rows = {row["entity_id"]: row for row in data["references"]}
@@ -428,23 +515,36 @@ async def test_reference_catalogue_uses_permitted_rooms_aliases_and_complete_gro
     assert rows[IDS[0]]["area_aliases"] == ["Study"]
     assert rows[IDS[0]]["aliases"] == ["Desk lamp"]
     assert rows[r.group.entity_id]["members"] == sorted(IDS[:2])
-    assert not (await assist_policy.async_check_voice_action(
-        r.e.hass, (r.group.entity_id,), user_id="child", operation="turn_off",
-    )).allowed
+    assert not (
+        await assist_policy.async_check_voice_action(
+            r.e.hass,
+            (r.group.entity_id,),
+            user_id="child",
+            operation="turn_off",
+        )
+    ).allowed
     guest = await assist_policy.async_project_voice_references(
-        r.e.hass, IDS, guest_role_id="guest",
+        r.e.hass,
+        IDS,
+        guest_role_id="guest",
     )
     assert {row["entity_id"] for row in guest["references"]} == {IDS[0]}
 
 
-@pytest.mark.parametrize("field", ["friendly_name", "aliases", "area_id", "area_aliases"])
-async def test_reference_metadata_obeys_compiled_hidden_fields(reference_catalogue, field):
+@pytest.mark.parametrize(
+    "field", ["friendly_name", "aliases", "area_id", "area_aliases"]
+)
+async def test_reference_metadata_obeys_compiled_hidden_fields(
+    reference_catalogue, field
+):
     """Metadata must not recover labels or locations the role explicitly hides."""
     r = reference_catalogue
     r.e.hass.data[DATA_RBAC].store.roles["guest"]["attributes"] = {"deny": [field]}
     r.e.hass.data[DATA_RBAC].evaluator.invalidate()
     data = await assist_policy.async_project_voice_references(
-        r.e.hass, IDS, guest_role_id="guest",
+        r.e.hass,
+        IDS,
+        guest_role_id="guest",
     )
     assert data["available"]
     if field == "friendly_name":
@@ -454,9 +554,12 @@ async def test_reference_metadata_obeys_compiled_hidden_fields(reference_catalog
         assert ("area" if field == "area_id" else field) not in row
 
 
-@pytest.mark.parametrize("change", ["hidden_member", "unexposed_group", "nested", "template"])
+@pytest.mark.parametrize(
+    "change", ["hidden_member", "unexposed_group", "nested", "template"]
+)
 async def test_group_references_never_reveal_partial_hidden_or_indirect_members(
-    reference_catalogue, change,
+    reference_catalogue,
+    change,
 ):
     """A group's label/membership disappears rather than leaking a hidden sibling."""
     r = reference_catalogue
@@ -470,9 +573,14 @@ async def test_group_references_never_reveal_partial_hidden_or_indirect_members(
         registry = er.async_get(r.e.hass)
         registry.async_remove(IDS[1])
         registry.async_get_or_create(
-            "light", "template", "replacement", suggested_object_id=IDS[1].partition(".")[2],
+            "light",
+            "template",
+            "replacement",
+            suggested_object_id=IDS[1].partition(".")[2],
         )
-    data = await assist_policy.async_project_voice_references(r.e.hass, IDS, user_id="owner")
+    data = await assist_policy.async_project_voice_references(
+        r.e.hass, IDS, user_id="owner"
+    )
     assert data["available"]
     assert r.group.entity_id not in {row["entity_id"] for row in data["references"]}
 
@@ -486,76 +594,205 @@ def ordinary_devices(env):
     for _service, flag in caps.MEDIA.values():
         features |= flag
     states = {
-        "light.dimmable": ("on", {
-            "supported_color_modes": ["rgb", "color_temp"], "brightness": 128,
-            "min_color_temp_kelvin": 2000, "max_color_temp_kelvin": 6500,
-        }),
-        "fan.ordinary": ("on", {
-            "supported_features": int(caps.FanEntityFeature.SET_SPEED), "percentage": 30,
-        }),
-        "climate.ordinary": ("heat", {
-            "supported_features": int(caps.ClimateEntityFeature.TARGET_TEMPERATURE
-                                      | caps.ClimateEntityFeature.PRESET_MODE),
-            "temperature": 20, "current_temperature": 18, "min_temp": 5, "max_temp": 30,
-            "hvac_modes": ["off", "heat", "cool"], "preset_modes": ["eco", "comfort"],
-        }),
-        "cover.ordinary": ("open", {
-            "device_class": "blind", "current_position": 50,
-            "supported_features": int(caps.CoverEntityFeature.OPEN | caps.CoverEntityFeature.CLOSE
-                                      | caps.CoverEntityFeature.STOP
-                                      | caps.CoverEntityFeature.SET_POSITION),
-        }),
-        "media_player.television": ("playing", {
-            "supported_features": int(features), "volume_level": 0.4, "media_duration": 180,
-            "media_position": 10, "media_title": "Synthetic track", "source_list": ["HDMI", "TV"],
-            "is_volume_muted": False, "shuffle": False, "repeat": "off",
-        }),
+        "light.dimmable": (
+            "on",
+            {
+                "supported_color_modes": ["rgb", "color_temp"],
+                "brightness": 128,
+                "min_color_temp_kelvin": 2000,
+                "max_color_temp_kelvin": 6500,
+            },
+        ),
+        "fan.ordinary": (
+            "on",
+            {
+                "supported_features": int(caps.FanEntityFeature.SET_SPEED),
+                "percentage": 30,
+            },
+        ),
+        "climate.ordinary": (
+            "heat",
+            {
+                "supported_features": int(
+                    caps.ClimateEntityFeature.TARGET_TEMPERATURE
+                    | caps.ClimateEntityFeature.PRESET_MODE
+                ),
+                "temperature": 20,
+                "current_temperature": 18,
+                "min_temp": 5,
+                "max_temp": 30,
+                "hvac_modes": ["off", "heat", "cool"],
+                "preset_modes": ["eco", "comfort"],
+            },
+        ),
+        "cover.ordinary": (
+            "open",
+            {
+                "device_class": "blind",
+                "current_position": 50,
+                "supported_features": int(
+                    caps.CoverEntityFeature.OPEN
+                    | caps.CoverEntityFeature.CLOSE
+                    | caps.CoverEntityFeature.STOP
+                    | caps.CoverEntityFeature.SET_POSITION
+                ),
+            },
+        ),
+        "media_player.television": (
+            "playing",
+            {
+                "supported_features": int(features),
+                "volume_level": 0.4,
+                "media_duration": 180,
+                "media_position": 10,
+                "media_title": "Synthetic track",
+                "source_list": ["HDMI", "TV"],
+                "is_volume_muted": False,
+                "shuffle": False,
+                "repeat": "off",
+            },
+        ),
     }
     grants = e.store.roles["guest"]["allow"]["entities"]["entity_ids"]
     registry = er.async_get(e.hass)
     for eid, (state, attrs) in states.items():
         domain, _, object_id = eid.partition(".")
         registry.async_get_or_create(domain, "test", eid, suggested_object_id=object_id)
-        e.hass.states.async_set(eid, state, {"friendly_name": f"Permitted {object_id}", **attrs})
+        e.hass.states.async_set(
+            eid, state, {"friendly_name": f"Permitted {object_id}", **attrs}
+        )
         async_expose_entity(e.hass, "conversation", eid, True)
         grants[eid] = {"read": True, "control": True}
     e.evaluator.invalidate()
     return SimpleNamespace(e=e, caps=caps, states=states)
 
 
-@pytest.mark.parametrize(("eid", "action", "args", "service", "data"), [
-    ("light.dimmable", "set_light", {"level": 25}, "turn_on", {"brightness_pct": 25}),
-    ("light.dimmable", "set_light", {"rgb": [10, 20, 30]}, "turn_on", {"rgb_color": [10, 20, 30]}),
-    ("light.dimmable", "set_light", {"kelvin": 3000}, "turn_on", {"color_temp_kelvin": 3000}),
-    ("fan.ordinary", "set_fan_speed", {"level": 60}, "set_percentage", {"percentage": 60}),
-    ("climate.ordinary", "set_temperature", {"temperature": 21},
-     "set_temperature", {"temperature": 21}),
-    ("climate.ordinary", "set_hvac_mode", {"mode": "cool"}, "set_hvac_mode", {"hvac_mode": "cool"}),
-    ("climate.ordinary", "set_preset", {"mode": "eco"}, "set_preset_mode", {"preset_mode": "eco"}),
-    ("cover.ordinary", "close_blind", {}, "close_cover", {}),
-    ("cover.ordinary", "set_blind_position", {"level": 40},
-     "set_cover_position", {"position": 40}),
-    ("media_player.television", "stop", {}, "media_stop", {}),
-    ("media_player.television", "mute", {}, "volume_mute", {"is_volume_muted": True}),
-    ("media_player.television", "seek", {"position": 45}, "media_seek", {"seek_position": 45}),
-    ("media_player.television", "shuffle", {"enabled": True}, "shuffle_set", {"shuffle": True}),
-    ("media_player.television", "repeat", {"mode": "one"}, "repeat_set", {"repeat": "one"}),
-    ("media_player.television", "source", {"mode": "HDMI"}, "select_source", {"source": "HDMI"}),
-])
+@pytest.mark.parametrize(
+    ("eid", "action", "args", "service", "data"),
+    [
+        (
+            "light.dimmable",
+            "set_light",
+            {"level": 25},
+            "turn_on",
+            {"brightness_pct": 25},
+        ),
+        (
+            "light.dimmable",
+            "set_light",
+            {"rgb": [10, 20, 30]},
+            "turn_on",
+            {"rgb_color": [10, 20, 30]},
+        ),
+        (
+            "light.dimmable",
+            "set_light",
+            {"kelvin": 3000},
+            "turn_on",
+            {"color_temp_kelvin": 3000},
+        ),
+        (
+            "fan.ordinary",
+            "set_fan_speed",
+            {"level": 60},
+            "set_percentage",
+            {"percentage": 60},
+        ),
+        (
+            "climate.ordinary",
+            "set_temperature",
+            {"temperature": 21},
+            "set_temperature",
+            {"temperature": 21},
+        ),
+        (
+            "climate.ordinary",
+            "set_hvac_mode",
+            {"mode": "cool"},
+            "set_hvac_mode",
+            {"hvac_mode": "cool"},
+        ),
+        (
+            "climate.ordinary",
+            "set_preset",
+            {"mode": "eco"},
+            "set_preset_mode",
+            {"preset_mode": "eco"},
+        ),
+        ("cover.ordinary", "close_blind", {}, "close_cover", {}),
+        (
+            "cover.ordinary",
+            "set_blind_position",
+            {"level": 40},
+            "set_cover_position",
+            {"position": 40},
+        ),
+        ("media_player.television", "stop", {}, "media_stop", {}),
+        (
+            "media_player.television",
+            "mute",
+            {},
+            "volume_mute",
+            {"is_volume_muted": True},
+        ),
+        (
+            "media_player.television",
+            "seek",
+            {"position": 45},
+            "media_seek",
+            {"seek_position": 45},
+        ),
+        (
+            "media_player.television",
+            "shuffle",
+            {"enabled": True},
+            "shuffle_set",
+            {"shuffle": True},
+        ),
+        (
+            "media_player.television",
+            "repeat",
+            {"mode": "one"},
+            "repeat_set",
+            {"repeat": "one"},
+        ),
+        (
+            "media_player.television",
+            "source",
+            {"mode": "HDMI"},
+            "select_source",
+            {"source": "HDMI"},
+        ),
+    ],
+)
 async def test_ordinary_typed_controls_use_exact_service_and_original_context(
-    ordinary_devices, eid, action, args, service, data,
+    ordinary_devices,
+    eid,
+    action,
+    args,
+    service,
+    data,
 ):
     """Feature/argument validation and current role checks precede exact service admission."""
-    if not import_module("custom_components.codex_assist.satellite_runtime").satellite_tools_supported():
+    if not import_module(
+        "custom_components.codex_assist.satellite_runtime"
+    ).satellite_tools_supported():
         pytest.skip("Modern typed tools required")
     o = ordinary_devices
     tools = import_module("custom_components.codex_assist.guest_control")
-    prepared_type = import_module("custom_components.codex_assist.voice_match").PreparedRequest
-    tool_type = import_module("custom_components.codex_assist.protected_devices").ProtectedDeviceTool
+    prepared_type = import_module(
+        "custom_components.codex_assist.voice_match"
+    ).PreparedRequest
+    tool_type = import_module(
+        "custom_components.codex_assist.protected_devices"
+    ).ProtectedDeviceTool
     context = Context(user_id="original-kiosk")
     prepared = prepared_type("Synthetic command", "", None, None, verified=True)
     auth = tools.GuestAuthorization(
-        context, prepared, "guest", o.e.satellite.entity_id,
+        context,
+        prepared,
+        "guest",
+        o.e.satellite.entity_id,
         request_is_current=lambda ctx, req: ctx is context and req is prepared,
         selected_role=lambda: "guest",
     )
@@ -566,10 +803,16 @@ async def test_ordinary_typed_controls_use_exact_service_and_original_context(
 
     o.e.hass.services.async_register(eid.partition(".")[0], service, record)
     result = await tool_type(auth, []).async_call(
-        o.e.hass, llm.ToolInput(
-            tool_name=tool_type.name, tool_args={"action": action, "entity_ids": [eid], **args},
-        ), llm.LLMContext(
-            platform="codex_assist", context=context, assistant="conversation", language="en",
+        o.e.hass,
+        llm.ToolInput(
+            tool_name=tool_type.name,
+            tool_args={"action": action, "entity_ids": [eid], **args},
+        ),
+        llm.LLMContext(
+            platform="codex_assist",
+            context=context,
+            assistant="conversation",
+            language="en",
             device_id=None,
         ),
     )
@@ -579,56 +822,98 @@ async def test_ordinary_typed_controls_use_exact_service_and_original_context(
     assert context.user_id == "original-kiosk"
 
 
-@pytest.mark.parametrize(("eid", "action", "args"), [
-    ("light.dimmable", "set_light", {"rgb": [999, 0, 0]}),
-    ("light.dimmable", "set_light", {"level": float("nan")}),
-    ("light.dimmable", "set_light", {"kelvin": 8000}),
-    ("climate.ordinary", "set_temperature", {"temperature": 90}),
-    ("climate.ordinary", "set_hvac_mode", {"mode": "not-a-mode"}),
-    ("media_player.television", "seek", {"position": 500}),
-    ("media_player.television", "source", {"mode": "private-url"}),
-    ("cover.ordinary", "unlock", {}),
-])
+@pytest.mark.parametrize(
+    ("eid", "action", "args"),
+    [
+        ("light.dimmable", "set_light", {"rgb": [999, 0, 0]}),
+        ("light.dimmable", "set_light", {"level": float("nan")}),
+        ("light.dimmable", "set_light", {"kelvin": 8000}),
+        ("climate.ordinary", "set_temperature", {"temperature": 90}),
+        ("climate.ordinary", "set_hvac_mode", {"mode": "not-a-mode"}),
+        ("media_player.television", "seek", {"position": 500}),
+        ("media_player.television", "source", {"mode": "private-url"}),
+        ("cover.ordinary", "unlock", {}),
+    ],
+)
 async def test_invalid_or_unsupported_ordinary_capabilities_remain_denied(
-    ordinary_devices, eid, action, args,
+    ordinary_devices,
+    eid,
+    action,
+    args,
 ):
     """Invalid values and invented capabilities are not a service-call escape hatch."""
     o = ordinary_devices
-    assert not (await o.caps.check(
-        o.e.hass, (eid,), guest_role_id="guest", action=action, args=args,
-    )).allowed
+    assert not (
+        await o.caps.check(
+            o.e.hass,
+            (eid,),
+            guest_role_id="guest",
+            action=action,
+            args=args,
+        )
+    ).allowed
 
 
-@pytest.mark.parametrize("change", [
-    "door", "garage", "hidden_class", "read_only", "unexposed", "unsupported_feature",
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "door",
+        "garage",
+        "hidden_class",
+        "read_only",
+        "unexposed",
+        "unsupported_feature",
+    ],
+)
 async def test_ordinary_expansion_preserves_security_exposure_and_role_boundaries(
-    ordinary_devices, change,
+    ordinary_devices,
+    change,
 ):
     """Even owners cannot use the ordinary-blind vocabulary to open doors or garages."""
     o = ordinary_devices
     eid, action, args = "cover.ordinary", "open_blind", {}
     if change in {"door", "garage"}:
         state = o.e.hass.states.get(eid)
-        o.e.hass.states.async_set(eid, "open", {
-            **state.attributes, "device_class": "garage" if change == "garage" else "door",
-        })
+        o.e.hass.states.async_set(
+            eid,
+            "open",
+            {
+                **state.attributes,
+                "device_class": "garage" if change == "garage" else "door",
+            },
+        )
     elif change == "hidden_class":
         o.e.store.roles["guest"]["attributes"] = {"deny": ["device_class"]}
     elif change == "read_only":
-        o.e.store.roles["guest"]["allow"]["entities"]["entity_ids"][eid]["control"] = False
+        o.e.store.roles["guest"]["allow"]["entities"]["entity_ids"][eid]["control"] = (
+            False
+        )
     elif change == "unexposed":
         async_expose_entity(o.e.hass, "conversation", eid, False)
     else:
-        o.e.hass.states.async_set(eid, "open", {"device_class": "blind", "supported_features": 0})
+        o.e.hass.states.async_set(
+            eid, "open", {"device_class": "blind", "supported_features": 0}
+        )
     o.e.evaluator.invalidate()
-    assert not (await o.caps.check(
-        o.e.hass, (eid,), guest_role_id="guest", action=action, args=args,
-    )).allowed
+    assert not (
+        await o.caps.check(
+            o.e.hass,
+            (eid,),
+            guest_role_id="guest",
+            action=action,
+            args=args,
+        )
+    ).allowed
     if change in {"door", "garage"}:
-        assert not (await o.caps.check(
-            o.e.hass, (eid,), user_id="owner", action=action, args=args,
-        )).allowed
+        assert not (
+            await o.caps.check(
+                o.e.hass,
+                (eid,),
+                user_id="owner",
+                action=action,
+                args=args,
+            )
+        ).allowed
 
 
 async def test_richer_state_projection_obeys_field_masks_and_never_returns_raw_attributes(
@@ -638,7 +923,9 @@ async def test_richer_state_projection_obeys_field_masks_and_never_returns_raw_a
     o = ordinary_devices
     eid = "media_player.television"
     state = o.e.hass.states.get(eid)
-    o.e.hass.states.async_set(eid, "playing", {**state.attributes, "private_token": "synthetic"})
+    o.e.hass.states.async_set(
+        eid, "playing", {**state.attributes, "private_token": "synthetic"}
+    )
     o.e.store.roles["guest"]["attributes"] = {"deny": ["media_title"]}
     o.e.evaluator.invalidate()
     result = await o.caps.project(o.e.hass, (eid,), guest_role_id="guest")
@@ -647,14 +934,18 @@ async def test_richer_state_projection_obeys_field_masks_and_never_returns_raw_a
     assert attrs["volume_level"] == 0.4 and attrs["source_list"] == ["HDMI", "TV"]
     assert "media_title" not in attrs and "private_token" not in attrs
     assert "media_title" not in attrs["readable_fields"]
-    climate = await o.caps.project(o.e.hass, ("climate.ordinary",), guest_role_id="guest")
+    climate = await o.caps.project(
+        o.e.hass, ("climate.ordinary",), guest_role_id="guest"
+    )
     assert climate["entities"][0]["attributes"]["temperature_unit"] == str(
         o.e.hass.config.units.temperature_unit,
     )
     state = o.e.hass.states.get(eid)
     o.e.hass.states.async_set(eid, "idle", {"friendly_name": state.name})
     idle = await o.caps.project(o.e.hass, (eid,), guest_role_id="guest")
-    assert idle["entities"][0]["attributes"]["readable_fields"] == attrs["readable_fields"]
+    assert (
+        idle["entities"][0]["attributes"]["readable_fields"] == attrs["readable_fields"]
+    )
 
 
 @pytest.fixture
@@ -667,7 +958,10 @@ async def native_voice(env, monkeypatch):
     prefix = "custom_components.codex_assist."
     if not import_module(prefix + "satellite_runtime").satellite_tools_supported():
         pytest.skip("Protected tools require modern HA")
-    for name, attr in (("pymicro_vad", "MicroVad"), ("pyspeex_noise", "AudioProcessor")):
+    for name, attr in (
+        ("pymicro_vad", "MicroVad"),
+        ("pyspeex_noise", "AudioProcessor"),
+    ):
         module = ModuleType(name)
         setattr(module, attr, lambda *args, **kwargs: None)
         monkeypatch.setitem(sys.modules, name, module)
@@ -681,26 +975,41 @@ async def native_voice(env, monkeypatch):
     adapter_type = import_module(prefix + "voice_match_stt").VoiceMatchSttAdapter
     client_types = import_module(prefix + "codex_client")
     # Isolate cold/warm receipt request counts across tests and prior personalities.
-    monkeypatch.setattr(import_module(prefix + "action_receipts"), "_RECEIPTS", OrderedDict())
+    monkeypatch.setattr(
+        import_module(prefix + "action_receipts"), "_RECEIPTS", OrderedDict()
+    )
 
     e = env
     assert await async_setup_component(e.hass, "assist_pipeline", {})
-    entry = MockConfigEntry(domain="codex_assist", options={
-        "voice_match_pairing_key": e.state.key,
-    })
+    entry = MockConfigEntry(
+        domain="codex_assist",
+        options={
+            "voice_match_pairing_key": e.state.key,
+        },
+    )
     entry.add_to_hass(e.hass)
     e.runtime = voices.runtime_for_entry(entry)
     e.dispatcher._runtime = e.runtime
-    state = SimpleNamespace(speaker=None, forged=False, error=False, model_calls=[],
-                            target=IDS[0], tts=[], owner=None,
-                            text="Turn on the requested lamp", revision="a" * 32,
-                            last_wire=None, replay=False)
+    state = SimpleNamespace(
+        speaker=None,
+        forged=False,
+        error=False,
+        model_calls=[],
+        target=IDS[0],
+        tts=[],
+        owner=None,
+        text="Turn on the requested lamp",
+        revision="a" * 32,
+        last_wire=None,
+        replay=False,
+    )
 
     async def recognise(metadata, stream):
         state.owner = asyncio.current_task()
         assert b"".join([part async for part in stream])
         wire = e.packets.encode(
-            e.state.key, state.text,
+            e.state.key,
+            state.text,
             voice="profile" if state.speaker else None,
             revision=state.revision if state.speaker else None,
             ha_user_id=state.speaker,
@@ -715,8 +1024,10 @@ async def native_voice(env, monkeypatch):
         )
 
     source = SimpleNamespace(
-        supported_languages=["en"], supported_formats=[stt.AudioFormats.WAV],
-        supported_codecs=[stt.AudioCodecs.PCM], supported_bit_rates=[stt.AudioBitRates.BITRATE_16],
+        supported_languages=["en"],
+        supported_formats=[stt.AudioFormats.WAV],
+        supported_codecs=[stt.AudioCodecs.PCM],
+        supported_bit_rates=[stt.AudioBitRates.BITRATE_16],
         supported_sample_rates=[stt.AudioSampleRates.SAMPLERATE_16000],
         supported_channels=[stt.AudioChannels.CHANNEL_MONO],
         audio_processing=stt.SpeechAudioProcessing(False, False, False),
@@ -725,21 +1036,34 @@ async def native_voice(env, monkeypatch):
     stt_adapter = adapter_type(entry, source)
     stt_adapter.hass = e.hass
     stt_adapter.entity_id = "stt.test_protected"
-    monkeypatch.setattr(stt, "async_get_speech_to_text_engine", lambda *args: stt_adapter)
+    monkeypatch.setattr(
+        stt, "async_get_speech_to_text_engine", lambda *args: stt_adapter
+    )
     stream = SimpleNamespace(
-        engine="tts.test", media_source_id="media-source://tts/test", token="synthetic",
-        url="/synthetic.wav", content_type="audio/wav",
-        async_set_message=state.tts.append, delete=lambda: None, supports_streaming_input=False,
+        engine="tts.test",
+        media_source_id="media-source://tts/test",
+        token="synthetic",
+        url="/synthetic.wav",
+        content_type="audio/wav",
+        async_set_message=state.tts.append,
+        delete=lambda: None,
+        supports_streaming_input=False,
     )
     monkeypatch.setattr(tts, "async_create_stream", lambda **kwargs: stream)
 
     async def no_native_intent(*args, **kwargs):
-        raise AssertionError("Native sentence/local-intent/conversation path was entered")
+        raise AssertionError(
+            "Native sentence/local-intent/conversation path was entered"
+        )
 
     monkeypatch.setattr(processor, "recognize_intent", no_native_intent)
     monkeypatch.setattr(processor, "prepare_recognize_intent", no_native_intent)
-    profile = SimpleNamespace(model="synthetic", reasoning_effort="low",
-                              reasoning_summary="auto", text_verbosity="low")
+    profile = SimpleNamespace(
+        model="synthetic",
+        reasoning_effort="low",
+        reasoning_summary="auto",
+        text_verbosity="low",
+    )
 
     class Model:
         async def stream_turn(self, **kwargs):
@@ -747,24 +1071,43 @@ async def native_voice(env, monkeypatch):
             if receipt := receipt_response(kwargs, client_types):
                 yield receipt
                 return
-            yield client_types.CodexTextDelta("Premature unverified success must never be spoken.")
-            yield client_types.CodexToolCallDelta(client_types.CodexToolCall(
-                "call-1", "codex_assist__guest_on_off", command(state.target),
-            ))
+            yield client_types.CodexTextDelta(
+                "Premature unverified success must never be spoken."
+            )
+            yield client_types.CodexToolCallDelta(
+                client_types.CodexToolCall(
+                    "call-1",
+                    "codex_assist__guest_on_off",
+                    command(state.target),
+                )
+            )
             if state.error:
                 raise RuntimeError("Simulated incomplete provider response")
 
     async def handler(payload, context, text, language):
         assert state.owner is asyncio.current_task()
         return await model.async_fixed_tool_turn(
-            e.hass, Model(), profile, payload, context, text, language,
+            e.hass,
+            Model(),
+            profile,
+            payload,
+            context,
+            text,
+            language,
         )
 
     pipeline = assist_pipeline.Pipeline(
-        name="Synthetic protected pipeline", conversation_engine="never-enter",
-        conversation_language="en", language="en", stt_engine=stt_adapter.entity_id,
-        stt_language="en", tts_engine="tts.test", tts_language="en", tts_voice=None,
-        wake_word_entity=None, wake_word_id=None,
+        name="Synthetic protected pipeline",
+        conversation_engine="never-enter",
+        conversation_language="en",
+        language="en",
+        stt_engine=stt_adapter.entity_id,
+        stt_language="en",
+        tts_engine="tts.test",
+        tts_language="en",
+        tts_voice=None,
+        wake_word_entity=None,
+        wake_word_id=None,
     )
 
     async def run():
@@ -775,16 +1118,28 @@ async def native_voice(env, monkeypatch):
             yield b"\x01\x00" * 512
 
         await runner.async_run_protected_pipeline(
-            e.hass, pipeline=pipeline, context=context, audio_stream=audio(),
-            event_callback=events.append, binding=e.binding, ingress=e.ingress,
-            handler=handler, device_id=e.satellite.device_id,
+            e.hass,
+            pipeline=pipeline,
+            context=context,
+            audio_stream=audio(),
+            event_callback=events.append,
+            binding=e.binding,
+            ingress=e.ingress,
+            handler=handler,
+            device_id=e.satellite.device_id,
             satellite_id=e.satellite.entity_id,
         )
         return events, context
 
     yield SimpleNamespace(
-        env=e, state=state, run=run, entry=entry, pipeline=pipeline,
-        handler=handler, profile=profile, stt_adapter=stt_adapter,
+        env=e,
+        state=state,
+        run=run,
+        entry=entry,
+        pipeline=pipeline,
+        handler=handler,
+        profile=profile,
+        stt_adapter=stt_adapter,
         model_type=Model,
     )
     e.runtime.handoffs.clear()
@@ -793,7 +1148,9 @@ async def native_voice(env, monkeypatch):
 @pytest.fixture
 async def hooked_voice(native_voice, monkeypatch):
     """Synthetic ESPHome object shapes at the real hook; not network auth evidence."""
-    component_key = import_module("homeassistant.components.assist_satellite.const").DATA_COMPONENT
+    component_key = import_module(
+        "homeassistant.components.assist_satellite.const"
+    ).DATA_COMPONENT
     kiosk_adapter = import_module("custom_components.codex_assist.kiosk_adapter")
     agent_type = import_module(
         "custom_components.codex_assist.conversation",
@@ -801,12 +1158,19 @@ async def hooked_voice(native_voice, monkeypatch):
 
     n = native_voice
     e = n.env
-    e.hass.config_entries.async_update_entry(n.entry, options={
-        **n.entry.options, "guest_voice_role_id": "guest",
-        "protected_satellite_ids": [e.satellite.entity_id],
-    })
+    e.hass.config_entries.async_update_entry(
+        n.entry,
+        options={
+            **n.entry.options,
+            "guest_voice_role_id": "guest",
+            "protected_satellite_ids": [e.satellite.entity_id],
+        },
+    )
     stt_entry = er.async_get(e.hass).async_get_or_create(
-        "stt", "codex_assist", "synthetic-protected", config_entry=n.entry,
+        "stt",
+        "codex_assist",
+        "synthetic-protected",
+        config_entry=n.entry,
         suggested_object_id="test_protected",
     )
     assert stt_entry.entity_id == n.stt_adapter.entity_id
@@ -860,15 +1224,28 @@ async def hooked_voice(native_voice, monkeypatch):
             events.append(event)
 
     satellite = Satellite()
-    monkeypatch.setattr(kiosk_adapter, "_native_types", lambda: (
-        Satellite, Runtime, Client, Connection,
-    ))
-    monkeypatch.setitem(e.hass.data, component_key, SimpleNamespace(
-        get_entity=lambda eid: satellite if eid == satellite.entity_id else None,
-    ))
+    monkeypatch.setattr(
+        kiosk_adapter,
+        "_native_types",
+        lambda: (
+            Satellite,
+            Runtime,
+            Client,
+            Connection,
+        ),
+    )
+    monkeypatch.setitem(
+        e.hass.data,
+        component_key,
+        SimpleNamespace(
+            get_entity=lambda eid: satellite if eid == satellite.entity_id else None,
+        ),
+    )
     monkeypatch.setattr(kiosk_adapter, "async_get_pipeline", lambda *args: n.pipeline)
     agent = agent_type(n.entry)
-    monkeypatch.setattr(kiosk_adapter.conversation, "async_get_agent", lambda *args: agent)
+    monkeypatch.setattr(
+        kiosk_adapter.conversation, "async_get_agent", lambda *args: agent
+    )
 
     async def handle(_hass, entry, profile, payload, context, text, language):
         assert entry is n.entry
@@ -876,7 +1253,9 @@ async def hooked_voice(native_voice, monkeypatch):
 
     monkeypatch.setattr(kiosk_adapter, "async_entry_voice_handler", handle)
     adapter = kiosk_adapter.KioskSatelliteAdapter(
-        e.hass, n.entry, [satellite.entity_id],
+        e.hass,
+        n.entry,
+        [satellite.entity_id],
     )
     adapter.install()
 
@@ -888,9 +1267,17 @@ async def hooked_voice(native_voice, monkeypatch):
         await satellite.async_accept_pipeline_from_satellite(audio(), context=context)
         return context
 
-    yield SimpleNamespace(n=n, adapter=adapter, satellite=satellite, runtime=runtime,
-                          events=events, fallback=fallback, run=run, module=kiosk_adapter,
-                          agent=agent)
+    yield SimpleNamespace(
+        n=n,
+        adapter=adapter,
+        satellite=satellite,
+        runtime=runtime,
+        events=events,
+        fallback=fallback,
+        run=run,
+        module=kiosk_adapter,
+        agent=agent,
+    )
     await adapter.async_close()
     # Explicitly remove synthetic enrollment so no closed hook leaks between tests.
     e.hass.config_entries.async_update_entry(n.entry, options={})
@@ -899,10 +1286,18 @@ async def hooked_voice(native_voice, monkeypatch):
 
 @pytest.mark.parametrize(
     ("speaker", "target", "allowed"),
-    [(None, IDS[0], True), (None, IDS[1], False), ("child", IDS[1], True),
-     ("child", IDS[2], False), ("adult", IDS[2], True), ("owner", IDS[3], True)],
+    [
+        (None, IDS[0], True),
+        (None, IDS[1], False),
+        ("child", IDS[1], True),
+        ("child", IDS[2], False),
+        ("adult", IDS[2], True),
+        ("owner", IDS[3], True),
+    ],
 )
-async def test_hook_to_native_stt_protected_tools_and_tts(hooked_voice, speaker, target, allowed):
+async def test_hook_to_native_stt_protected_tools_and_tts(
+    hooked_voice, speaker, target, allowed
+):
     """The installed hook reaches native STT/TTS without the unrestricted path."""
     h = hooked_voice
     h.n.state.speaker, h.n.state.target = speaker, target
@@ -911,19 +1306,33 @@ async def test_hook_to_native_stt_protected_tools_and_tts(hooked_voice, speaker,
     assert h.fallback == []
     assert h.n.state.tts == [
         "Understood."
-        if allowed else "The requested device command could not be completed.",
+        if allowed
+        else "The requested device command could not be completed.",
     ]
     assert h.satellite.context is context
     if allowed:
         assert h.n.env.calls[0][3] is context
 
 
-@pytest.mark.parametrize("change", [
-    "plaintext", "connection_not_ready", "client_not_ready", "runtime_unavailable",
-    "replaced_client", "replaced_connection", "config_changed", "caller_options",
-    "wrong_stt", "wrong_agent", "satellite_unavailable",
-])
-async def test_hook_refuses_unsupported_or_changed_session(hooked_voice, monkeypatch, change):
+@pytest.mark.parametrize(
+    "change",
+    [
+        "plaintext",
+        "connection_not_ready",
+        "client_not_ready",
+        "runtime_unavailable",
+        "replaced_client",
+        "replaced_connection",
+        "config_changed",
+        "caller_options",
+        "wrong_stt",
+        "wrong_agent",
+        "satellite_unavailable",
+    ],
+)
+async def test_hook_refuses_unsupported_or_changed_session(
+    hooked_voice, monkeypatch, change
+):
     """Transport/client/configuration changes never cause ordinary Assist fallback."""
     h = hooked_voice
     if change == "plaintext":
@@ -940,26 +1349,41 @@ async def test_hook_refuses_unsupported_or_changed_session(hooked_voice, monkeyp
         h.runtime.client._connection = object()
     elif change == "config_changed":
         binding = h.adapter._binding(h.satellite)
-        h.n.env.hass.config_entries.async_update_entry(h.satellite.config_entry, data={"new": True})
+        h.n.env.hass.config_entries.async_update_entry(
+            h.satellite.config_entry, data={"new": True}
+        )
         assert binding.admit(Context()) is None
         return
     elif change == "caller_options":
-        h.n.env.hass.config_entries.async_update_entry(h.n.entry, options={
-            **h.n.entry.options, "guest_voice_role_id": "changed",
-        })
+        h.n.env.hass.config_entries.async_update_entry(
+            h.n.entry,
+            options={
+                **h.n.entry.options,
+                "guest_voice_role_id": "changed",
+            },
+        )
     elif change == "wrong_stt":
-        monkeypatch.setattr(h.module, "async_get_pipeline", lambda *args: replace(
-            h.n.pipeline, stt_engine="stt.untrusted",
-        ))
+        monkeypatch.setattr(
+            h.module,
+            "async_get_pipeline",
+            lambda *args: replace(
+                h.n.pipeline,
+                stt_engine="stt.untrusted",
+            ),
+        )
     elif change == "wrong_agent":
-        monkeypatch.setattr(h.module.conversation, "async_get_agent", lambda *args: object())
+        monkeypatch.setattr(
+            h.module.conversation, "async_get_agent", lambda *args: object()
+        )
     else:
         h.satellite.available = False
     await h.run()
     assert h.fallback == [] and h.n.env.calls == [] and h.n.state.model_calls == []
 
 
-async def test_disconnect_cancels_native_stt_and_clears_pending_admission(hooked_voice, monkeypatch):
+async def test_disconnect_cancels_native_stt_and_clears_pending_admission(
+    hooked_voice, monkeypatch
+):
     """Losing the connection cancels pending STT, not just active model tools."""
     h = hooked_voice
     started = asyncio.Event()
@@ -981,7 +1405,9 @@ async def test_disconnect_cancels_native_stt_and_clears_pending_admission(hooked
     assert h.fallback == [] and h.n.env.calls == [] and h.n.state.tts == []
 
 
-async def test_closed_hook_denies_during_reload_and_restores_only_after_deenrollment(hooked_voice):
+async def test_closed_hook_denies_during_reload_and_restores_only_after_deenrollment(
+    hooked_voice,
+):
     """Reload keeps a closed denial hook; deliberate de-enrollment restores native."""
     h = hooked_voice
     hook = h.satellite.async_accept_pipeline_from_satellite
@@ -990,7 +1416,9 @@ async def test_closed_hook_denies_during_reload_and_restores_only_after_deenroll
     await h.run()
     assert h.fallback == [] and h.n.env.calls == []
     replacement = h.module.KioskSatelliteAdapter(
-        h.n.env.hass, h.n.entry, [h.satellite.entity_id],
+        h.n.env.hass,
+        h.n.entry,
+        [h.satellite.entity_id],
     )
     replacement.install()
     assert h.satellite.async_accept_pipeline_from_satellite is not hook
@@ -1003,7 +1431,9 @@ async def test_closed_hook_denies_during_reload_and_restores_only_after_deenroll
     assert h.module.HOOK not in h.satellite.__dict__
 
 
-async def test_disconnect_cancels_model_and_does_not_keep_tools_alive(hooked_voice, monkeypatch):
+async def test_disconnect_cancels_model_and_does_not_keep_tools_alive(
+    hooked_voice, monkeypatch
+):
     """Disconnect cancellation propagates through the model handler and admission."""
     h = hooked_voice
     started = asyncio.Event()
@@ -1069,17 +1499,26 @@ async def native_esphome_voice(native_voice, monkeypatch):
     native_type, runtime_type, client_type, connection_type = module._native_types()
     n = native_voice
     e = n.env
-    e.hass.config_entries.async_update_entry(n.entry, options={
-        **n.entry.options, "guest_voice_role_id": "guest",
-        "protected_satellite_ids": [e.satellite.entity_id],
-    })
+    e.hass.config_entries.async_update_entry(
+        n.entry,
+        options={
+            **n.entry.options,
+            "guest_voice_role_id": "guest",
+            "protected_satellite_ids": [e.satellite.entity_id],
+        },
+    )
     er.async_get(e.hass).async_get_or_create(
-        "stt", "codex_assist", "native-package-protected", config_entry=n.entry,
+        "stt",
+        "codex_assist",
+        "native-package-protected",
+        config_entry=n.entry,
         suggested_object_id="test_protected",
     )
     esphome_entry = e.hass.config_entries.async_get_entry(e.satellite.config_entry_id)
     client = client_type(
-        "192.0.2.1", 6053, noise_psk=base64.b64encode(bytes(range(32))).decode(),
+        "192.0.2.1",
+        6053,
+        noise_psk=base64.b64encode(bytes(range(32))).decode(),
     )
 
     def connection(ready=True):
@@ -1087,7 +1526,8 @@ async def native_esphome_voice(native_voice, monkeypatch):
         # No socket/handshake is executed. Tests explicitly control real library
         # readiness fields; this does not establish cryptographic authentication.
         value.connection_state = (
-            connection_module.ConnectionState.CONNECTED if ready
+            connection_module.ConnectionState.CONNECTED
+            if ready
             else connection_module.ConnectionState.HANDSHAKE_COMPLETE
         )
         value.is_connected = ready
@@ -1095,8 +1535,11 @@ async def native_esphome_voice(native_voice, monkeypatch):
 
     client._connection = connection()
     runtime = runtime_type(
-        entry_id=esphome_entry.entry_id, title="Synthetic native satellite",
-        client=client, store=None, available=True,
+        entry_id=esphome_entry.entry_id,
+        title="Synthetic native satellite",
+        client=client,
+        store=None,
+        available=True,
         device_info=api.DeviceInfo(
             mac_address="02:00:00:00:00:01",
             voice_assistant_feature_flags=int(
@@ -1110,16 +1553,23 @@ async def native_esphome_voice(native_voice, monkeypatch):
     satellite.hass = e.hass
     satellite.entity_id = e.satellite.entity_id
     e.satellite = er.async_get(e.hass).async_update_entity(
-        e.satellite.entity_id, new_unique_id=satellite.unique_id,
+        e.satellite.entity_id,
+        new_unique_id=satellite.unique_id,
     )
     satellite.registry_entry = e.satellite
     events = []
     monkeypatch.setattr(satellite, "async_write_ha_state", lambda: None)
     monkeypatch.setattr(satellite, "on_pipeline_event", events.append)
-    component_key = import_module("homeassistant.components.assist_satellite.const").DATA_COMPONENT
-    monkeypatch.setitem(e.hass.data, component_key, SimpleNamespace(
-        get_entity=lambda eid: satellite if eid == satellite.entity_id else None,
-    ))
+    component_key = import_module(
+        "homeassistant.components.assist_satellite.const"
+    ).DATA_COMPONENT
+    monkeypatch.setitem(
+        e.hass.data,
+        component_key,
+        SimpleNamespace(
+            get_entity=lambda eid: satellite if eid == satellite.entity_id else None,
+        ),
+    )
     monkeypatch.setattr(module, "async_get_pipeline", lambda *args: n.pipeline)
     agent_type = import_module(
         "custom_components.codex_assist.conversation",
@@ -1137,7 +1587,10 @@ async def native_esphome_voice(native_voice, monkeypatch):
     async def run(entity=None):
         target = entity if entity is not None else satellite
         port = await target.handle_pipeline_start(
-            "", 0, api.VoiceAssistantAudioSettings(), None,
+            "",
+            0,
+            api.VoiceAssistantAudioSettings(),
+            None,
         )
         assert port == 0
         await target.handle_audio(b"\x01\x00" * 512)
@@ -1156,15 +1609,29 @@ async def native_esphome_voice(native_voice, monkeypatch):
         replacement.registry_entry = e.satellite
         monkeypatch.setattr(replacement, "async_write_ha_state", lambda: None)
         monkeypatch.setattr(replacement, "on_pipeline_event", events.append)
-        monkeypatch.setitem(e.hass.data, component_key, SimpleNamespace(
-            get_entity=lambda eid: replacement if eid == replacement.entity_id else None,
-        ))
+        monkeypatch.setitem(
+            e.hass.data,
+            component_key,
+            SimpleNamespace(
+                get_entity=lambda eid: (
+                    replacement if eid == replacement.entity_id else None
+                ),
+            ),
+        )
         return replacement
 
     yield SimpleNamespace(
-        n=n, satellite=satellite, runtime=runtime, client=client,
-        connection=connection, adapter=adapter, module=module, events=events, run=run,
-        replace_entity=replace_entity, component_key=component_key,
+        n=n,
+        satellite=satellite,
+        runtime=runtime,
+        client=client,
+        connection=connection,
+        adapter=adapter,
+        module=module,
+        events=events,
+        run=run,
+        replace_entity=replace_entity,
+        component_key=component_key,
     )
     await adapter.async_close()
     e.hass.config_entries.async_update_entry(n.entry, options={})
@@ -1173,11 +1640,20 @@ async def native_esphome_voice(native_voice, monkeypatch):
 
 @pytest.mark.parametrize(
     ("speaker", "target", "allowed"),
-    [(None, IDS[0], True), (None, IDS[1], False), ("child", IDS[1], True),
-     ("child", IDS[2], False), ("adult", IDS[2], True), ("owner", IDS[3], True)],
+    [
+        (None, IDS[0], True),
+        (None, IDS[1], False),
+        ("child", IDS[1], True),
+        ("child", IDS[2], False),
+        ("adult", IDS[2], True),
+        ("owner", IDS[3], True),
+    ],
 )
 async def test_real_esphome_audio_entry_reaches_protected_native_pipeline(
-    native_esphome_voice, speaker, target, allowed,
+    native_esphome_voice,
+    speaker,
+    target,
+    allowed,
 ):
     """The actual native audio callback resolves the installed per-instance hook."""
     h = native_esphome_voice
@@ -1186,7 +1662,8 @@ async def test_real_esphome_audio_entry_reaches_protected_native_pipeline(
     assert len(h.n.env.calls) == int(allowed)
     assert h.n.state.tts == [
         "Understood."
-        if allowed else "The requested device command could not be completed.",
+        if allowed
+        else "The requested device command could not be completed.",
     ]
     if allowed:
         assert h.n.env.calls[0][3].user_id is None
@@ -1194,9 +1671,12 @@ async def test_real_esphome_audio_entry_reaches_protected_native_pipeline(
     assert sum(event.type == "run-end" for event in h.events) == 1
 
 
-@pytest.mark.parametrize("change", ["plaintext", "not_ready", "disconnect", "runtime_replaced"])
+@pytest.mark.parametrize(
+    "change", ["plaintext", "not_ready", "disconnect", "runtime_replaced"]
+)
 async def test_real_esphome_library_readiness_and_disconnect_are_required(
-    native_esphome_voice, change,
+    native_esphome_voice,
+    change,
 ):
     """Real connection state and HA disconnect callbacks revoke old admission."""
     h = native_esphome_voice
@@ -1222,7 +1702,9 @@ async def test_real_esphome_reconnect_requires_a_new_binding(native_esphome_voic
     h.runtime.async_on_disconnect()
     assert not h.runtime.disconnect_callbacks
     h.client._connection = h.connection()
-    h.runtime.async_on_connect(h.n.env.hass, h.runtime.device_info, h.runtime.api_version)
+    h.runtime.async_on_connect(
+        h.n.env.hass, h.runtime.device_info, h.runtime.api_version
+    )
     assert old_binding.admit(Context()) is None
     await h.run()
     assert len(h.n.env.calls) == 2
@@ -1233,9 +1715,13 @@ async def test_real_esphome_reconnect_requires_a_new_binding(native_esphome_voic
 def continuing_voice(native_esphome_voice, monkeypatch):
     """Only activity detection is simulated; native stages and admissions remain real."""
     h = native_esphome_voice
-    monkeypatch.setattr(h.module, "SpeechActivity", lambda: SimpleNamespace(
-        process=lambda audio: True,
-    ))
+    monkeypatch.setattr(
+        h.module,
+        "SpeechActivity",
+        lambda: SimpleNamespace(
+            process=lambda audio: True,
+        ),
+    )
     return h
 
 
@@ -1255,15 +1741,20 @@ async def test_native_continuation_retains_data_with_fresh_turns(continuing_voic
     await h.run()
     assert timer.cancelled()
     assert len(h.n.env.calls) == 2
-    assert len(h.n.state.model_calls) == 3  # two planning calls and one cached-style receipt
+    assert (
+        len(h.n.state.model_calls) == 3
+    )  # two planning calls and one cached-style receipt
     second = h.n.state.model_calls[2]["input_items"]
     assert second[0]["role"] == "user"
     assert second[0]["content"].endswith(": Turn on the requested lamp")
     assert second[-1] == {"role": "user", "content": "And the other one?"}
     assert all(row.get("role") in {"user", "assistant"} for row in second)
     assert not h.adapter.ingress._pending and not h.adapter.ingress._active
-    assert all(event.data["intent_output"]["continue_conversation"]
-               for event in h.events if event.type == "intent-end")
+    assert all(
+        event.data["intent_output"]["continue_conversation"]
+        for event in h.events
+        if event.type == "intent-end"
+    )
     assert h.n.env.calls[0][3] is not h.n.env.calls[1][3]
 
 
@@ -1294,7 +1785,8 @@ async def test_speech_after_deadline_cannot_restart_the_window(continuing_voice)
 
 @pytest.mark.parametrize("change", ["speaker", "profile", "visibility", "disconnect"])
 async def test_native_continuation_shares_only_currently_permitted_context(
-    continuing_voice, change,
+    continuing_voice,
+    change,
 ):
     """Speaker/profile/reconnect keep shared context; a narrower projection hides it."""
     h = continuing_voice
@@ -1310,7 +1802,9 @@ async def test_native_continuation_shares_only_currently_permitted_context(
         h.runtime.async_on_disconnect()
         assert not h.adapter._conversations
         h.client._connection = h.connection()
-        h.runtime.async_on_connect(h.n.env.hass, h.runtime.device_info, h.runtime.api_version)
+        h.runtime.async_on_connect(
+            h.n.env.hass, h.runtime.device_info, h.runtime.api_version
+        )
     await h.run()
     assert len(h.n.env.calls) == 2
     items = h.n.state.model_calls[2]["input_items"]
@@ -1322,7 +1816,9 @@ async def test_native_continuation_shares_only_currently_permitted_context(
 
 
 @pytest.mark.parametrize("invalid", ["forged", "replay"])
-async def test_native_followup_cannot_reuse_identity_evidence(continuing_voice, invalid):
+async def test_native_followup_cannot_reuse_identity_evidence(
+    continuing_voice, invalid
+):
     """Forged or replayed follow-ups cannot borrow the previous speaker's grant."""
     h = continuing_voice
     await h.run()
@@ -1332,7 +1828,8 @@ async def test_native_followup_cannot_reuse_identity_evidence(continuing_voice, 
     assert len(h.n.state.model_calls) == 2
     assert h.n.state.tts == (
         ["Understood.", "This voice request is not authorised."]
-        if invalid == "replay" else ["Understood."]
+        if invalid == "replay"
+        else ["Understood."]
     )
     assert not h.adapter._conversations[h.satellite.entity_id][1].pending_speech
     assert not [event for event in h.events if event.type == "intent-end"][-1].data[
@@ -1359,7 +1856,8 @@ async def test_native_stop_phrase_ends_without_model_or_continuation(continuing_
 
 
 async def test_native_silent_capture_expiry_cancels_without_reply_loop(
-    continuing_voice, monkeypatch,
+    continuing_voice,
+    monkeypatch,
 ):
     """Silence cancels native capture and disables device continuation without TTS."""
     h = continuing_voice
@@ -1374,7 +1872,9 @@ async def test_native_silent_capture_expiry_cancels_without_reply_loop(
 
     monkeypatch.setattr(h.n.stt_adapter, "async_process_audio_stream", silence)
     api = import_module("aioesphomeapi")
-    await h.satellite.handle_pipeline_start("", 0, api.VoiceAssistantAudioSettings(), None)
+    await h.satellite.handle_pipeline_start(
+        "", 0, api.VoiceAssistantAudioSettings(), None
+    )
     task = h.satellite._pipeline_task
     async with asyncio.timeout(5):
         await started.wait()
@@ -1390,15 +1890,20 @@ async def test_native_silent_capture_expiry_cancels_without_reply_loop(
     assert h.events[-1].type == "run-end"
 
 
-async def test_native_intent_event_serializes_continuation_flag(continuing_voice, monkeypatch):
+async def test_native_intent_event_serializes_continuation_flag(
+    continuing_voice, monkeypatch
+):
     """Real ESPHome serialization sends one then zero for the continuation flag."""
     h = continuing_voice
     await h.run()
     native = type(h.satellite)
     client_type = type(h.client)
     sent = []
-    monkeypatch.setattr(client_type, "send_voice_assistant_event",
-                        lambda self, kind, data: sent.append((kind, data)))
+    monkeypatch.setattr(
+        client_type,
+        "send_voice_assistant_event",
+        lambda self, kind, data: sent.append((kind, data)),
+    )
     intent_end = next(event for event in h.events if event.type == "intent-end")
     native.on_pipeline_event(h.satellite, intent_end)
     assert sent[-1][1]["continue_conversation"] == "1"
@@ -1419,7 +1924,9 @@ async def test_playback_hook_restored_only_when_owned(continuing_voice):
     assert h.satellite.tts_response_finished.__func__ is original
 
 
-async def test_replacement_retains_shared_memory_but_restores_old_playback_hook(continuing_voice):
+async def test_replacement_retains_shared_memory_but_restores_old_playback_hook(
+    continuing_voice,
+):
     """Replacement cancels microphone state, not the shared permitted dialogue."""
     h = continuing_voice
     await h.run()
@@ -1446,11 +1953,21 @@ async def test_newer_peer_playback_hook_is_never_overwritten(continuing_voice):
     assert h.satellite.tts_response_finished is peer
 
 
-@pytest.mark.parametrize("change", [
-    "same", "speaker", "permitted_speaker", "hidden", "replay", "storage_failure",
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "same",
+        "speaker",
+        "permitted_speaker",
+        "hidden",
+        "replay",
+        "storage_failure",
+    ],
+)
 async def test_native_two_turn_music_choice_requires_fresh_authority(
-    continuing_voice, monkeypatch, change,
+    continuing_voice,
+    monkeypatch,
+    change,
 ):
     """Only the same freshly verified subject can consume a saved music choice."""
     import json  # noqa: PLC0415
@@ -1460,28 +1977,42 @@ async def test_native_two_turn_music_choice_requires_fresh_authority(
     types = import_module("custom_components.codex_assist.codex_client")
     entry = MockConfigEntry(domain="music_assistant")
     entry.add_to_hass(e.hass)
-    player = er.async_get(e.hass).async_get_or_create(
-        "media_player", "music_assistant", "test-player", config_entry=entry,
-        suggested_object_id="test",
-    ).entity_id
+    player = (
+        er.async_get(e.hass)
+        .async_get_or_create(
+            "media_player",
+            "music_assistant",
+            "test-player",
+            config_entry=entry,
+            suggested_object_id="test",
+        )
+        .entity_id
+    )
     e.hass.states.async_set(player, "idle", {"friendly_name": "Test speaker"})
     async_expose_entity(e.hass, "conversation", player, True)
     store = e.hass.data[DATA_RBAC].store
     store.roles["guest"]["allow"]["entities"]["entity_ids"][player] = {
-        "read": True, "control": True,
+        "read": True,
+        "control": True,
     }
     e.hass.data[DATA_RBAC].evaluator = Evaluator(e.hass, store)
     played, tokens, held = [], [], []
 
     async def search(call):
-        return {"tracks": [{"uri": "library://track/1", "name": "Test song",
-                            "media_type": "track"}]}
+        return {
+            "tracks": [
+                {"uri": "library://track/1", "name": "Test song", "media_type": "track"}
+            ]
+        }
 
     async def play(call):
         played.append(call)
 
     e.hass.services.async_register(
-        "music_assistant", "search", search, supports_response=SupportsResponse.ONLY,
+        "music_assistant",
+        "search",
+        search,
+        supports_response=SupportsResponse.ONLY,
     )
     e.hass.services.async_register("music_assistant", "play_media", play)
 
@@ -1501,9 +2032,13 @@ async def test_native_two_turn_music_choice_requires_fresh_authority(
         else:
             assert not any(row.get("type") == "function_call" for row in items)
             args = {"action": "play", "candidate_id": tokens[0], "speaker": player}
-        yield types.CodexToolCallDelta(types.CodexToolCall(
-            "music-call", "codex_assist__guest_music", args,
-        ))
+        yield types.CodexToolCallDelta(
+            types.CodexToolCall(
+                "music-call",
+                "codex_assist__guest_music",
+                args,
+            )
+        )
 
     monkeypatch.setattr(h.n.model_type, "stream_turn", stream_turn)
     original_handler = h.module.async_entry_voice_handler
@@ -1517,14 +2052,19 @@ async def test_native_two_turn_music_choice_requires_fresh_authority(
     await h.run()
     state = h.adapter._history._satellites[h.satellite.entity_id]
     assert tokens and tokens[0] in state["choices"]["items"] and not played
-    assert any(tokens[0] in row["content"] for turn in state["turns"] for row in turn["messages"])
+    assert any(
+        tokens[0] in row["content"]
+        for turn in state["turns"]
+        for row in turn["messages"]
+    )
     assert not held[0][-1]._authorization.guest.valid()
     h.n.state.text = "Yes, that one"
     if change == "speaker":
         h.n.state.speaker = "child"
     elif change == "permitted_speaker":
         store.roles["child"]["allow"]["entities"]["entity_ids"][player] = {
-            "read": True, "control": True,
+            "read": True,
+            "control": True,
         }
         e.hass.data[DATA_RBAC].evaluator = Evaluator(e.hass, store)
         h.n.state.speaker = "child"
@@ -1533,6 +2073,7 @@ async def test_native_two_turn_music_choice_requires_fresh_authority(
     elif change == "replay":
         h.n.state.replay = True
     elif change == "storage_failure":
+
         async def fail_save(data):
             raise OSError("Synthetic storage failure")
 
@@ -1543,7 +2084,9 @@ async def test_native_two_turn_music_choice_requires_fresh_authority(
         assert held[0][-1] is not held[1][-1]
         assert played[0].data["media_id"] == "library://track/1"
         assert played[0].context.user_id is None
-        assert not h.adapter._history._satellites[h.satellite.entity_id]["choices"]["items"]
+        assert not h.adapter._history._satellites[h.satellite.entity_id]["choices"][
+            "items"
+        ]
         await h.run()  # same candidate token cannot be replayed in a third turn
         assert len(played) == 1
 
@@ -1557,9 +2100,13 @@ async def test_native_store_restore_keeps_context_but_requires_fresh_verificatio
     history_module = import_module("custom_components.codex_assist.protected_history")
     h.runtime.async_on_disconnect()
     h.client._connection = h.connection()
-    h.runtime.async_on_connect(h.n.env.hass, h.runtime.device_info, h.runtime.api_version)
+    h.runtime.async_on_connect(
+        h.n.env.hass, h.runtime.device_info, h.runtime.api_version
+    )
     h.adapter._history = history_module.SharedSatelliteHistory(
-        h.n.env.hass, h.n.entry.entry_id, [h.satellite.entity_id],
+        h.n.env.hass,
+        h.n.entry.entry_id,
+        [h.satellite.entity_id],
     )
     assert not h.adapter._conversations
     h.n.state.forged = True
@@ -1573,7 +2120,9 @@ async def test_native_store_restore_keeps_context_but_requires_fresh_verificatio
     assert len(h.n.env.calls) == 2
 
 
-async def test_native_private_turn_is_hidden_from_child_without_erasing_it(continuing_voice):
+async def test_native_private_turn_is_hidden_from_child_without_erasing_it(
+    continuing_voice,
+):
     """An owner's broad context cannot be recalled or laundered through a child turn."""
     h = continuing_voice
     h.n.state.speaker = "owner"
@@ -1586,7 +2135,9 @@ async def test_native_private_turn_is_hidden_from_child_without_erasing_it(conti
     assert len(h.n.state.model_calls[-1]["input_items"]) == 5
 
 
-async def test_native_silence_stop_and_forget_have_separate_durable_semantics(continuing_voice):
+async def test_native_silence_stop_and_forget_have_separate_durable_semantics(
+    continuing_voice,
+):
     """Silence/stop preserve dialogue; an authorised explicit forget removes it."""
     h = continuing_voice
     await h.run()
@@ -1612,15 +2163,22 @@ async def test_native_silence_stop_and_forget_have_separate_durable_semantics(co
     ]
 
 
-@pytest.mark.parametrize("change", ["none", "group_id", "group_name", "membership", "exposure", "alias"])
+@pytest.mark.parametrize(
+    "change", ["none", "group_id", "group_name", "membership", "exposure", "alias"]
+)
 async def test_native_room_group_resolution_replans_wrong_direction_and_rechecks_metadata(
-    reference_catalogue, continuing_voice, monkeypatch, change,
+    reference_catalogue,
+    continuing_voice,
+    monkeypatch,
+    change,
 ):
     """Use exact members with new permissions, never a group service or stale alias."""
     r, h = reference_catalogue, continuing_voice
     h.n.state.speaker = "owner"
     h.n.state.text = "Turn the reading room lights off"
-    dr.async_get(r.e.hass).async_update_device(r.e.satellite.device_id, area_id=r.area.id)
+    dr.async_get(r.e.hass).async_update_device(
+        r.e.satellite.device_id, area_id=r.area.id
+    )
     types = import_module("custom_components.codex_assist.codex_client")
     rounds = []
 
@@ -1634,36 +2192,60 @@ async def test_native_room_group_resolution_replans_wrong_direction_and_rechecks
         else:
             operation = "turn_off"
             if change == "membership":
-                r.e.hass.states.async_set(r.group.entity_id, "on", {
-                    "friendly_name": "Reading room lights", "entity_id": [IDS[0], IDS[2]],
-                })
+                r.e.hass.states.async_set(
+                    r.group.entity_id,
+                    "on",
+                    {
+                        "friendly_name": "Reading room lights",
+                        "entity_id": [IDS[0], IDS[2]],
+                    },
+                )
             elif change == "exposure":
                 async_expose_entity(r.e.hass, "conversation", IDS[1], False)
             elif change == "alias":
-                er.async_get(r.e.hass).async_update_entity(IDS[0], aliases={"Changed label"})
-        yield types.CodexToolCallDelta(types.CodexToolCall(
-            f"round-{len(rounds)}", "codex_assist__guest_on_off",
-            {"operation": operation, "entity_ids": (
-                [r.group.entity_id] if change == "group_id"
-                else ["Reading room lights"] if change == "group_name" else list(IDS[:2])
-            )},
-        ))
+                er.async_get(r.e.hass).async_update_entity(
+                    IDS[0], aliases={"Changed label"}
+                )
+        yield types.CodexToolCallDelta(
+            types.CodexToolCall(
+                f"round-{len(rounds)}",
+                "codex_assist__guest_on_off",
+                {
+                    "operation": operation,
+                    "entity_ids": (
+                        [r.group.entity_id]
+                        if change == "group_id"
+                        else ["Reading room lights"]
+                        if change == "group_name"
+                        else list(IDS[:2])
+                    ),
+                },
+            )
+        )
 
     monkeypatch.setattr(h.n.model_type, "stream_turn", stream_turn)
     await h.run()
     assert len(rounds) == (3 if change in {"none", "group_id", "group_name"} else 2)
-    assert "Reading Room" in rounds[0]["instructions"] and "Desk lamp" in rounds[0]["instructions"]
+    assert (
+        "Reading Room" in rounds[0]["instructions"]
+        and "Desk lamp" in rounds[0]["instructions"]
+    )
     assert '"members": ["light.guest", "light.child"]' not in rounds[0]["instructions"]
     assert '"members": ["light.child", "light.guest"]' in rounds[0]["instructions"]
     assert '"current_room": true' in rounds[0]["instructions"]
     assert len(r.e.calls) == (2 if change in {"none", "group_id", "group_name"} else 0)
-    assert all(call[1] == "turn_off" and call[2]["entity_id"] in IDS[:2] for call in r.e.calls)
+    assert all(
+        call[1] == "turn_off" and call[2]["entity_id"] in IDS[:2] for call in r.e.calls
+    )
     assert not any(call[2]["entity_id"] == r.group.entity_id for call in r.e.calls)
 
 
 @pytest.mark.parametrize("revoke_second", [False, True])
 async def test_native_compound_ordinary_controls_and_partial_spoken_feedback(
-    continuing_voice, ordinary_devices, monkeypatch, revoke_second,
+    continuing_voice,
+    ordinary_devices,
+    monkeypatch,
+    revoke_second,
 ):
     """Fresh native evidence can stop generic playback and dim; revocation stops remaining effects."""
     h, o = continuing_voice, ordinary_devices
@@ -1689,14 +2271,20 @@ async def test_native_compound_ordinary_controls_and_partial_spoken_feedback(
         if receipt := receipt_response(kwargs, types):
             yield receipt
             return
-        yield types.CodexToolCallDelta(types.CodexToolCall(
-            "stop", "codex_assist__ordinary_devices",
-            {"action": "stop", "entity_ids": ["media_player.television"]},
-        ))
-        yield types.CodexToolCallDelta(types.CodexToolCall(
-            "dim", "codex_assist__ordinary_devices",
-            {"action": "set_light", "entity_ids": ["light.dimmable"], "level": 25},
-        ))
+        yield types.CodexToolCallDelta(
+            types.CodexToolCall(
+                "stop",
+                "codex_assist__ordinary_devices",
+                {"action": "stop", "entity_ids": ["media_player.television"]},
+            )
+        )
+        yield types.CodexToolCallDelta(
+            types.CodexToolCall(
+                "dim",
+                "codex_assist__ordinary_devices",
+                {"action": "set_light", "entity_ids": ["light.dimmable"], "level": 25},
+            )
+        )
 
     monkeypatch.setattr(h.n.model_type, "stream_turn", stream_turn)
     await h.run()
@@ -1722,7 +2310,9 @@ async def test_post_action_read_revocation_cannot_speak_a_stale_success_reply(
 
     async def revoke_after_admission(call):
         e.calls.append(call)
-        e.store.roles["guest"]["allow"]["entities"]["entity_ids"][IDS[0]]["read"] = False
+        e.store.roles["guest"]["allow"]["entities"]["entity_ids"][IDS[0]]["read"] = (
+            False
+        )
         e.evaluator.invalidate()
 
     e.hass.services.async_register("light", "turn_on", revoke_after_admission)
@@ -1735,11 +2325,21 @@ async def test_post_action_read_revocation_cannot_speak_a_stale_success_reply(
 
 @pytest.mark.parametrize(
     ("speaker", "target", "allowed"),
-    [(None, IDS[0], True), (None, IDS[1], False), ("child", IDS[1], True),
-     ("child", IDS[2], False), ("adult", IDS[2], True), ("owner", IDS[3], True)],
+    [
+        (None, IDS[0], True),
+        (None, IDS[1], False),
+        ("child", IDS[1], True),
+        ("child", IDS[2], False),
+        ("adult", IDS[2], True),
+        ("owner", IDS[3], True),
+    ],
 )
 async def test_replaced_native_entity_cannot_return_to_ordinary_pipeline(
-    native_esphome_voice, monkeypatch, speaker, target, allowed,
+    native_esphome_voice,
+    monkeypatch,
+    speaker,
+    target,
+    allowed,
 ):
     """A native entity replacement must not silently lose protected enrollment."""
     h = native_esphome_voice
@@ -1754,7 +2354,8 @@ async def test_replaced_native_entity_cannot_return_to_ordinary_pipeline(
 
     monkeypatch.setattr(
         native_module.AssistSatelliteEntity,
-        "async_accept_pipeline_from_satellite", ordinary_pipeline,
+        "async_accept_pipeline_from_satellite",
+        ordinary_pipeline,
     )
     replacement = type(h.satellite)(h.satellite.config_entry)
     assert h.module.HOOK in replacement.__dict__
@@ -1763,11 +2364,21 @@ async def test_replaced_native_entity_cannot_return_to_ordinary_pipeline(
     replacement.registry_entry = h.satellite.registry_entry
     monkeypatch.setattr(replacement, "async_write_ha_state", lambda: None)
     monkeypatch.setattr(replacement, "on_pipeline_event", h.events.append)
-    component_key = import_module("homeassistant.components.assist_satellite.const").DATA_COMPONENT
-    monkeypatch.setitem(h.n.env.hass.data, component_key, SimpleNamespace(
-        get_entity=lambda eid: replacement if eid == replacement.entity_id else None,
-    ))
-    await replacement.handle_pipeline_start("", 0, api.VoiceAssistantAudioSettings(), None)
+    component_key = import_module(
+        "homeassistant.components.assist_satellite.const"
+    ).DATA_COMPONENT
+    monkeypatch.setitem(
+        h.n.env.hass.data,
+        component_key,
+        SimpleNamespace(
+            get_entity=lambda eid: (
+                replacement if eid == replacement.entity_id else None
+            ),
+        ),
+    )
+    await replacement.handle_pipeline_start(
+        "", 0, api.VoiceAssistantAudioSettings(), None
+    )
     await replacement.handle_audio(b"\x01\x00" * 512)
     await replacement.handle_pipeline_stop(abort=False)
     async with asyncio.timeout(5):
@@ -1776,11 +2387,14 @@ async def test_replaced_native_entity_cannot_return_to_ordinary_pipeline(
     assert len(h.n.env.calls) == int(allowed)
     assert h.n.state.tts == [
         "Understood."
-        if allowed else "The requested device command could not be completed.",
+        if allowed
+        else "The requested device command could not be completed.",
     ]
 
 
-async def test_native_replacement_revokes_old_connection_and_retires_old_instance(native_esphome_voice):
+async def test_native_replacement_revokes_old_connection_and_retires_old_instance(
+    native_esphome_voice,
+):
     """Even a reused API connection needs fresh admission after entity replacement."""
     h = native_esphome_voice
     old_binding = h.adapter._binding(h.satellite)
@@ -1794,7 +2408,8 @@ async def test_native_replacement_revokes_old_connection_and_retires_old_instanc
 
 
 async def test_native_replacement_cancels_active_model_before_publishing_new_hook(
-    native_esphome_voice, monkeypatch,
+    native_esphome_voice,
+    monkeypatch,
 ):
     """Constructing a new entity revokes and cancels active work on its predecessor."""
     h = native_esphome_voice
@@ -1823,7 +2438,9 @@ async def test_native_replacement_with_changed_unique_identity_is_guarded_but_de
 ):
     """A different device identity cannot evade enrollment by constructing a new entity."""
     h = native_esphome_voice
-    h.runtime.device_info = replace(h.runtime.device_info, mac_address="02:00:00:00:00:02")
+    h.runtime.device_info = replace(
+        h.runtime.device_info, mac_address="02:00:00:00:00:02"
+    )
     replacement = h.replace_entity()
     await h.run(replacement)
     assert h.n.env.calls == [] and h.n.state.model_calls == [] and h.n.state.tts == []
@@ -1840,7 +2457,9 @@ async def test_native_closed_owner_guards_replacement_until_new_adapter_takes_ov
     await h.run(replacement)
     assert h.n.env.calls == [] and h.n.state.model_calls == []
     new_owner = h.module.KioskSatelliteAdapter(
-        h.n.env.hass, h.n.entry, [replacement.entity_id],
+        h.n.env.hass,
+        h.n.entry,
+        [replacement.entity_id],
     )
     new_owner.install()
     try:
@@ -1853,16 +2472,23 @@ async def test_native_closed_owner_guards_replacement_until_new_adapter_takes_ov
 
 
 async def test_native_lifecycle_guard_can_enroll_before_entity_construction(
-    native_esphome_voice, monkeypatch,
+    native_esphome_voice,
+    monkeypatch,
 ):
     """Saved registry enrollment is guarded before a later platform constructs its entity."""
     h = native_esphome_voice
     await h.adapter.async_close()
-    monkeypatch.setitem(h.n.env.hass.data, h.component_key, SimpleNamespace(
-        get_entity=lambda eid: None,
-    ))
+    monkeypatch.setitem(
+        h.n.env.hass.data,
+        h.component_key,
+        SimpleNamespace(
+            get_entity=lambda eid: None,
+        ),
+    )
     new_owner = h.module.KioskSatelliteAdapter(
-        h.n.env.hass, h.n.entry, [h.satellite.entity_id],
+        h.n.env.hass,
+        h.n.entry,
+        [h.satellite.entity_id],
     )
     new_owner.install()
     try:
@@ -1874,7 +2500,9 @@ async def test_native_lifecycle_guard_can_enroll_before_entity_construction(
         await new_owner.async_close()
 
 
-async def test_constructor_guard_leaves_unenrolled_esphome_entries_untouched(native_esphome_voice):
+async def test_constructor_guard_leaves_unenrolled_esphome_entries_untouched(
+    native_esphome_voice,
+):
     """The class-wide interception does not install hooks on unrelated satellites."""
     h = native_esphome_voice
     other = MockConfigEntry(domain="esphome")
@@ -1884,7 +2512,9 @@ async def test_constructor_guard_leaves_unenrolled_esphome_entries_untouched(nat
     assert h.module.HOOK not in unrelated.__dict__
 
 
-async def test_constructor_restoration_does_not_overwrite_a_newer_hook(native_esphome_voice):
+async def test_constructor_restoration_does_not_overwrite_a_newer_hook(
+    native_esphome_voice,
+):
     """Explicit de-enrollment restores only the exact constructor hook we installed."""
     h = native_esphome_voice
     native = type(h.satellite)
@@ -1903,7 +2533,8 @@ async def test_constructor_restoration_does_not_overwrite_a_newer_hook(native_es
 
 
 async def test_constructor_guard_restores_only_after_last_owner_deenrolls(
-    native_esphome_voice, monkeypatch,
+    native_esphome_voice,
+    monkeypatch,
 ):
     """Removing one owner must not remove constructor protection from another."""
     h = native_esphome_voice
@@ -1914,30 +2545,43 @@ async def test_constructor_guard_restores_only_after_last_owner_deenrolls(
     other_esphome = MockConfigEntry(domain="esphome")
     other_esphome.add_to_hass(hass)
     other_esphome.runtime_data = replace(
-        h.runtime, entry_id=other_esphome.entry_id,
+        h.runtime,
+        entry_id=other_esphome.entry_id,
         device_info=replace(h.runtime.device_info, mac_address="02:00:00:00:00:03"),
     )
     second = native(other_esphome)
     assert h.module.HOOK not in second.__dict__
     device = dr.async_get(hass).async_get_or_create(
-        config_entry_id=other_esphome.entry_id, identifiers={("esphome", "second-test")},
+        config_entry_id=other_esphome.entry_id,
+        identifiers={("esphome", "second-test")},
     )
     registered = er.async_get(hass).async_get_or_create(
-        "assist_satellite", "esphome", second.unique_id,
-        config_entry=other_esphome, device_id=device.id, suggested_object_id="second",
+        "assist_satellite",
+        "esphome",
+        second.unique_id,
+        config_entry=other_esphome,
+        device_id=device.id,
+        suggested_object_id="second",
     )
     second.hass = hass
     second.entity_id = registered.entity_id
     second.registry_entry = registered
-    other_codex = MockConfigEntry(domain="codex_assist", options={
-        "protected_satellite_ids": [second.entity_id],
-        "voice_match_pairing_key": h.n.env.state.key,
-    })
+    other_codex = MockConfigEntry(
+        domain="codex_assist",
+        options={
+            "protected_satellite_ids": [second.entity_id],
+            "voice_match_pairing_key": h.n.env.state.key,
+        },
+    )
     other_codex.add_to_hass(hass)
     entities = {h.satellite.entity_id: h.satellite, second.entity_id: second}
-    monkeypatch.setitem(hass.data, h.component_key, SimpleNamespace(
-        get_entity=entities.get,
-    ))
+    monkeypatch.setitem(
+        hass.data,
+        h.component_key,
+        SimpleNamespace(
+            get_entity=entities.get,
+        ),
+    )
     other_owner = h.module.KioskSatelliteAdapter(hass, other_codex, [second.entity_id])
     other_owner.install()
     try:
@@ -1954,11 +2598,20 @@ async def test_constructor_guard_restores_only_after_last_owner_deenrolls(
 
 @pytest.mark.parametrize(
     ("speaker", "target", "allowed"),
-    [(None, IDS[0], True), (None, IDS[1], False), ("child", IDS[1], True),
-     ("child", IDS[2], False), ("adult", IDS[2], True), ("owner", IDS[3], True)],
+    [
+        (None, IDS[0], True),
+        (None, IDS[1], False),
+        ("child", IDS[1], True),
+        ("child", IDS[2], False),
+        ("adult", IDS[2], True),
+        ("owner", IDS[3], True),
+    ],
 )
 async def test_native_stt_protected_model_rbac_execution_and_tts(
-    native_voice, speaker, target, allowed,
+    native_voice,
+    speaker,
+    target,
+    allowed,
 ):
     """Native stage controllers retain original Context and per-speaker policy."""
     n = native_voice
@@ -1968,12 +2621,16 @@ async def test_native_stt_protected_model_rbac_execution_and_tts(
     assert len(n.state.model_calls) == (2 if allowed else 1)
     assert n.state.tts == [
         "Understood."
-        if allowed else "The requested device command could not be completed.",
+        if allowed
+        else "The requested device command could not be completed.",
     ]
     assert sum(event.type == "run-start" for event in events) == 1
     assert sum(event.type == "run-end" for event in events) == 1
     assert any(event.type == "tts-end" for event in events)
-    assert "PRIVATE light.other" not in n.state.model_calls[0]["instructions"] or speaker == "owner"
+    assert (
+        "PRIVATE light.other" not in n.state.model_calls[0]["instructions"]
+        or speaker == "owner"
+    )
     if allowed:
         assert n.env.calls[0][3] is context
     assert context.user_id == "original-kiosk"
